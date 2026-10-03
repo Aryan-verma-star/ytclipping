@@ -59,3 +59,6 @@ services:
         value: "60"
       - key: CLIPPER_RATE_LIMIT_JOBS_PER_MINUTE
         value: "6"
+      # Cheap status polls get a dedicated generous bucket (see .env.example)
+      - key: CLIPPER_RATE_LIMIT_STATUS_PER_MINUTE
+        value: "300"

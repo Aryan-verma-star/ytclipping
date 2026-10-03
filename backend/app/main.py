@@ -54,6 +54,13 @@ _MEDIA_PATH_RE = re.compile(
     r"^/api/(?:jobs/[^/]+/clip|previews/[^/]+/(?:video|stream|thumbs/[^/]+)|media/proxy)$"
 )
 
+# Status polls (cheap indexed DB reads) the frontend issues ~1x/s for the
+# whole lifetime of a download / ffmpeg render. They get their own generous
+# bucket instead of the 60/min general one: two pollers at 0.7-1.5 s ticks
+# exhaust the general bucket in under a minute and the UI freezes on
+# "downloading…" even though the backend is making progress.
+_STATUS_PATH_RE = re.compile(r"^/api/(?:previews|jobs)/[^/]+$")
+
 
 def _run_migrations(db: Database) -> bool:
     """Alembic upgrade-to-head; returns False when it had to fall back."""
@@ -199,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.rate_limit_per_minute,
         settings.rate_limit_jobs_per_minute,
         settings.rate_limit_previews_per_minute,
+        settings.rate_limit_status_per_minute,
     )
     api_prefix = "/api"
 
@@ -228,6 +236,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bucket, label = "job", "job creation"
         elif method == "POST" and path == f"{api_prefix}/previews":
             bucket, label = "preview", "preview creation"
+        elif method == "GET" and _STATUS_PATH_RE.match(path):
+            bucket, label = "status", "status polling"
         else:
             bucket, label = "general", "requests"
         allowed, retry_after = limiter.check(ip, bucket)

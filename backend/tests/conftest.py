@@ -31,6 +31,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         rate_limit_per_minute=100000,
         rate_limit_jobs_per_minute=100000,
         rate_limit_previews_per_minute=100000,
+        rate_limit_status_per_minute=100000,  # tight poll loops in tests
         max_video_height=240,  # fast synthetic encodes
     )
     base.update(overrides)

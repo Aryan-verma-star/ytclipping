@@ -1,10 +1,13 @@
 """Dependency-free per-IP sliding-window rate limiting (spec §10).
 
-Three buckets:
+Four buckets:
 - general requests per minute (RATE_LIMIT_PER_MINUTE)
 - job creations per minute (RATE_LIMIT_JOBS_PER_MINUTE)
 - preview creations per minute (RATE_LIMIT_PREVIEWS_PER_MINUTE) — stricter
   because each preview is a full source download
+- status polls per minute (RATE_LIMIT_STATUS_PER_MINUTE) — generous; the
+  frontend legitimately polls preview/job status ~1x/s for minutes while
+  downloads/renders run, and starving those pollers freezes the UI
 
 Client identity comes from X-Real-IP / X-Forwarded-For (set by the Caddy
 gateway in the sandbox and by Render's edge in production), falling back to
@@ -51,16 +54,30 @@ class SlidingWindowCounter:
 
 
 class RateLimiter:
-    def __init__(self, per_minute: int, jobs_per_minute: int, previews_per_minute: int | None = None) -> None:
+    def __init__(
+        self,
+        per_minute: int,
+        jobs_per_minute: int,
+        previews_per_minute: int | None = None,
+        status_per_minute: int | None = None,
+    ) -> None:
         self.general = SlidingWindowCounter(per_minute, 60.0)
         self.jobs = SlidingWindowCounter(jobs_per_minute, 60.0)
         self.previews = SlidingWindowCounter(
             previews_per_minute if previews_per_minute is not None else jobs_per_minute, 60.0
         )
+        self.status = SlidingWindowCounter(
+            status_per_minute if status_per_minute is not None else 300, 60.0
+        )
 
     def check(self, client_ip: str, bucket: str = "general") -> tuple[bool, int]:
         """Return (allowed, retry_after_seconds) for the named bucket."""
-        counters = {"general": self.general, "job": self.jobs, "preview": self.previews}
+        counters = {
+            "general": self.general,
+            "job": self.jobs,
+            "preview": self.previews,
+            "status": self.status,
+        }
         counter = counters.get(bucket, self.general)
         if counter.allow(client_ip):
             return True, 0

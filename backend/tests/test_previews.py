@@ -418,6 +418,40 @@ def test_media_endpoints_exempt_from_general_rate_limit(client, tmp_path):
             assert c.get(f"/api/previews/{pid}/thumbs/000.jpg").status_code == 200
 
 
+def test_status_polling_has_its_own_rate_limit_bucket(client, tmp_path):
+    """Regression: the frontend polls GET /api/previews/{id} and
+    GET /api/jobs/{id} about once a second for the whole lifetime of a
+    download/render (~85 req/min combined). They used to share the 60/min
+    general bucket, so after ~40 s every poll 429'd and the UI froze on
+    "Downloading the source video…" even though the backend was progressing.
+    Status polls must keep flowing when the general bucket is exhausted."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    settings = make_preview_settings(
+        tmp_path, rate_limit_per_minute=5, rate_limit_status_per_minute=300
+    )
+    app = create_app(settings)
+    with TestClient(app) as c:
+        resp = c.post("/api/previews", json={"url": VALID_URL})
+        assert resp.status_code == 202
+        pid = resp.json()["id"]
+        job = post_job(c)
+        assert job.status_code == 202
+        jid = job.json()["id"]
+
+        # exhaust the general bucket (limit 5/min) — status polls follow next
+        for _ in range(6):
+            c.get("/api/meta")
+        assert c.get("/api/meta").status_code == 429
+
+        # a minute's worth of realistic 1 Hz status polling all gets through
+        for _ in range(70):
+            assert c.get(f"/api/previews/{pid}").status_code == 200
+            assert c.get(f"/api/jobs/{jid}").status_code == 200
+
+
 # ---------------- instant-load (stream-first) flow ----------------
 
 

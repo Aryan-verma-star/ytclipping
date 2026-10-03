@@ -222,14 +222,16 @@ function loadPreview(url) {
 }
 
 function pollPreview(id, token) {
-  var attempt = 0;
   var failures = 0;
+  var rateLimited = 0; // consecutive 429s — a busy window, not a real failure
+  var startedAt = Date.now();
   var tick = function () {
     if (token !== state.previewToken) return;
     request("/api/previews/" + id)
       .then(function (preview) {
         if (token !== state.previewToken) return;
         failures = 0;
+        rateLimited = 0;
         var editorLive = state.preview && state.preview.id === id;
 
         if (preview.status === "failed" || preview.status === "expired") {
@@ -276,8 +278,9 @@ function pollPreview(id, token) {
           };
           setLoadStatus("busy", (labels[preview.status] || "Working…") + " (" + preview.status + ")");
         }
-        attempt += 1;
-        if (attempt > 400) {
+        // free-tier downloads can legitimately take minutes (slow provider
+        // CDN) — keep polling for up to 12 min, then suggest the upload path
+        if (Date.now() - startedAt > 12 * 60 * 1000) {
           $("load-btn").disabled = false;
           setLoadStatus(
             "error",
@@ -286,10 +289,26 @@ function pollPreview(id, token) {
           );
           return;
         }
-        state.previewTimer = setTimeout(tick, editorLive ? 1500 : 700);
+        state.previewTimer = setTimeout(tick, editorLive ? 2000 : 1000);
       })
       .catch(function (err) {
         if (token !== state.previewToken) return;
+        if (err && err.status === 429) {
+          // the rate-limit window is full — back off hard and keep waiting;
+          // the preview keeps making progress server-side either way
+          rateLimited += 1;
+          if (rateLimited >= 60) {
+            $("load-btn").disabled = false;
+            setLoadStatus(
+              "error",
+              "The server is rate-limiting status updates (too many requests). " +
+                "Wait a minute and try again, or upload the video file instead."
+            );
+            return;
+          }
+          state.previewTimer = setTimeout(tick, 5000);
+          return;
+        }
         failures += 1;
         if (failures >= 6) {
           $("load-btn").disabled = false;
@@ -1260,10 +1279,13 @@ function uploadSubmitJob() {
 function poll(jobId) {
   if (state.jobTimer) clearTimeout(state.jobTimer);
   var failures = 0;
+  var rateLimited = 0;
+  var startedAt = Date.now();
   var render = function () {
     request("/api/jobs/" + jobId)
       .then(function (job) {
         failures = 0;
+        rateLimited = 0;
         renderStatus(job);
         if (job.status === "completed") {
           renderResult(job);
@@ -1275,10 +1297,26 @@ function poll(jobId) {
           loadHistory();
           return;
         }
-        state.jobTimer = setTimeout(render, 1500);
+        // long renders on the free tier can take a while — keep watching for
+        // up to 15 min before declaring the job lost
+        if (Date.now() - startedAt > 15 * 60 * 1000) {
+          showError(
+            "Still rendering after 15 minutes — the free-tier server is slow or busy. " +
+              "Check history in a minute; the job may still finish on its own."
+          );
+          return;
+        }
+        state.jobTimer = setTimeout(render, 2000);
       })
       .catch(function (err) {
         // transient failures (rate limit, blip) must not orphan a running job
+        if (err && err.status === 429) {
+          rateLimited += 1;
+          if (rateLimited < 60) {
+            state.jobTimer = setTimeout(render, 5000);
+            return;
+          }
+        }
         failures += 1;
         if (failures >= 6) {
           showError(err.message);

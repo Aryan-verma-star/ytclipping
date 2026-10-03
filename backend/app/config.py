@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60  # general API requests per client IP
     rate_limit_jobs_per_minute: int = 6  # job creations per client IP
     rate_limit_previews_per_minute: int = 6  # preview (full download!) per IP
+    # Status polling (GET /api/previews/{id}, GET /api/jobs/{id}) is a cheap
+    # indexed DB read the frontend does ~1x/s for minutes while a download or
+    # ffmpeg render runs — sharing the 60/min general bucket starved the
+    # pollers (429 storm -> "stuck on downloading" UI). Dedicated generous
+    # bucket; media streaming stays fully exempt.
+    rate_limit_status_per_minute: int = 300
     max_request_bytes: int = 65_536  # request body cap (we only ever submit URLs)
 
     # --- phase 4 (AI) ------------------------------------------------------
