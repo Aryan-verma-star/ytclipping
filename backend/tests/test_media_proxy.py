@@ -78,10 +78,14 @@ def test_proxy_retries_transient_403_then_streams(client, monkeypatch, fast_back
     assert resp.headers["content-type"] == "video/mp4"
     # exactly three upstream attempts: 403, 403, 200
     assert len(fake.requests) == 3
-    # browser User-Agent on every attempt (CDN 403s non-browser agents)
+    # full vidssave identity on every attempt: browser User-Agent (the CDN
+    # 403s non-browser agents) AND Origin/Referer vidssave.com (required
+    # from datacenter IPs like Render's — verified live 2026-10-03)
     for req in fake.requests:
         assert "Mozilla/5.0" in req.headers["user-agent"]
         assert "Clipper" not in req.headers["user-agent"]
+        assert req.headers.get("origin") == "https://vidssave.com"
+        assert req.headers.get("referer") == "https://vidssave.com/"
 
 
 def test_proxy_passes_range_header_upstream(client, monkeypatch, fast_backoff):

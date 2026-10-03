@@ -101,14 +101,19 @@ def media_proxy(request: Request, url: str):
             },
         )
 
-    # The vidssave CDN (down-XX.vidssave.com) 403s non-browser User-Agents
-    # (found live 2026-10-03: "Clipper/1.6" -> 403, browser UA -> 200), so the
-    # relay identifies as a normal browser for the upstream hop.
+    # Upstream identity (verified live 2026-10-03 against production): the
+    # vidssave CDN 403s non-browser User-Agents, AND from datacenter IPs
+    # (like this server on Render) it also requires the request to look like
+    # it comes from their own site — with Origin/Referer vidssave.com the
+    # same datacenter IP downloads fine (the server provider has always
+    # sent these and works from Render).
     upstream_headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
-        )
+        ),
+        "Origin": "https://vidssave.com",
+        "Referer": "https://vidssave.com/",
     }
     range_header = request.headers.get("range")
     if range_header:
