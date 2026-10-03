@@ -49,35 +49,37 @@ No code changes needed for either path. The app is already Dockerized.
 
 | Service   | Purpose                        | Free tier                                | Card? |
 |-----------|--------------------------------|------------------------------------------|-------|
-| Bitbucket | hosts the code (deploys from it) | unlimited private repos                 | No   |
+| GitHub    | hosts the code (deploys from it) | unlimited private repos                 | No   |
 | Render    | runs the backend + frontend    | 750 instance-hours/month (≈ always-on for 1 service) | No |
 | Neon       | Postgres database (metadata)   | ~0.5 GB storage, never expires           | No   |
 | Vercel *(optional)* | static frontend on a nicer URL | Hobby plan | No |
 
-> Sign-up tip: sign in to Render **with Bitbucket** — it connects your repo
-> in one click. Neon has its own login (Google / GitHub / e-mail all work).
+> Sign-up tip: sign in to **Render with GitHub** — one identity, and it
+> connects your repo in one click. Neon has its own login
+> (Google / GitHub / e-mail all work).
 
 ---
 
-## 2. The code on Bitbucket
+## 2. The code on GitHub
 
-Render builds from a Git repo, so the code lives on Bitbucket:
+Render builds from a Git repo, so the code lives on GitHub:
 
-**https://bitbucket.org/ytclipper/ytcliiper-backend** — already pushed
-(branch `main`).
+**https://github.com/Aryan-verma-star/ytclipping** — private repo, branch
+`main`, already pushed.
 
 **If you ever need to re-push it yourself** (e.g. from the
-`ytclipper-render-deploy.zip` backup): first create an **App password** —
-Bitbucket → avatar → **Personal Bitbucket settings** → **App passwords** →
-check **Repositories: Read and Write** — then:
+`ytclipper-render-deploy.zip` backup), the easiest way is a **Personal
+Access Token**: github.com → avatar → **Settings** → **Developer settings** →
+**Personal access tokens** → *Tokens (classic)* → **Generate new token** →
+check `repo` → then:
 
 ```bash
 cd ytclipper-backend          # the project folder (with backend/, frontend/, Dockerfile)
 git init -b main
 git add .
 git commit -m "YouTube Clipper — ready to deploy"
-git remote add origin https://bitbucket.org/ytclipper/ytcliiper-backend.git
-git push -u origin main       # asks for your Bitbucket username + the app password
+git remote add origin https://github.com/Aryan-verma-star/ytclipping.git
+git push -u origin main       # username = your GitHub login, password = the token
 ```
 
 The included `.gitignore` already keeps the repo clean and safe — it excludes:
@@ -123,13 +125,13 @@ never notice. It never expires and needs no card.
 
 ### 4.1 Create the service from the blueprint
 
-1. Go to **render.com** → **Get Started** / **Sign In** — choose **Bitbucket**
-   so your repo connects in one step (or sign up with e-mail, then connect
-   Bitbucket from User Settings → Connected accounts).
-2. Grant Render access when asked (you can limit it to the
-   `ytclipper/ytcliiper-backend` repo).
+1. Go to **render.com** → **Get Started** / **Sign In** — choose **GitHub**
+   (or sign up with e-mail, then connect GitHub from User Settings →
+   Connected accounts).
+2. Grant Render access — the repo is **private**, so pick
+   **Only select repositories** → `Aryan-verma-star/ytclipping`.
 3. Dashboard → **New +** → **Blueprint**.
-4. Select the `ytclipper/ytcliiper-backend` repo → Render reads `render.yaml`
+4. Select the `ytclipping` repo → Render reads `render.yaml`
    (already in the repo — it defines the service, region, health check and
    every environment variable).
 5. Render prompts for the values marked `sync: false`. Fill in:
@@ -189,7 +191,7 @@ Both pieces are still free; they're just deployed separately:
    ```
    Commit + push.
 2. **Deploy the frontend on Vercel.** vercel.com → **Add New… → Project** →
-   Import the `ytcliiper-backend` repo → set **Root Directory** to
+   Import the `ytclipping` repo from GitHub → set **Root Directory** to
    `frontend` → Framework Preset: **Other** → **Deploy**.
    (Vercel serves the static files as-is; there is nothing to build.)
 3. **Allow that origin on the backend.** Render → your service →

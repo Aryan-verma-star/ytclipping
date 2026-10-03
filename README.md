@@ -131,8 +131,8 @@ service serves the API *and* the frontend at the same URL. A split setup
 
 ### 2. Render (backend + UI, one service)
 
-1. Push this repository to Bitbucket (already done:
-   `bitbucket.org/ytclipper/ytcliiper-backend`).
+1. Push this repository to GitHub (done:
+   `github.com/Aryan-verma-star/ytclipping`).
 2. Render → New → Blueprint → select the repo (uses `render.yaml`).
 3. When prompted, set:
    - `CLIPPER_DATABASE_URL` = your Neon string
