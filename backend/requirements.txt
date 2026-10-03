@@ -7,5 +7,7 @@ pydantic==2.12.5
 pydantic-settings==2.13.1
 httpx==0.28.1
 yt-dlp==2026.8.19
+# AES-CBC decryption for the vidssave provider (their responses are encrypted)
+pycryptodome==3.23.0
 # Postgres driver (production: Neon). Not needed for the SQLite dev default.
 psycopg2-binary==2.9.13

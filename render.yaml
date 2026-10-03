@@ -20,11 +20,14 @@ services:
       # Must start with postgresql:// (or postgres://).
       - key: CLIPPER_DATABASE_URL
         sync: false
-      # Ordered provider chain. cobalt needs CLIPPER_COBALT_API_URL (+ optional
-      # key); ytdlp works from residential IPs, or set
-      # CLIPPER_YTDLP_COOKIES_FILE for datacenter-IP bot checks.
+      # Ordered provider chain. vidssave works from any IP (their resolvers do
+      # the YouTube talking; CDN links are not IP-locked) — verified live.
+      # cobalt needs CLIPPER_COBALT_API_URL (+ optional key); ytdlp needs
+      # CLIPPER_YTDLP_COOKIES(_FILE) on datacenter IPs.
       - key: CLIPPER_DOWNLOADER_PROVIDERS
-        value: cobalt,ytdlp
+        value: vidssave,cobalt,ytdlp
+      - key: CLIPPER_VIDSSAVE_ENABLED
+        value: "true"
       - key: CLIPPER_COBALT_API_URL
         sync: false
       - key: CLIPPER_COBALT_API_KEY

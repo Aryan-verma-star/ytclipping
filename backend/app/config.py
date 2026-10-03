@@ -74,8 +74,21 @@ class Settings(BaseSettings):
     max_source_seconds: float = 14400.0  # user decision: 4 hours
 
     # --- downloader providers ------------------------------------------
-    # Ordered chain, comma separated. Known providers: cobalt, ytdlp, sample.
-    downloader_providers: str = "cobalt,ytdlp"
+    # Ordered chain, comma separated. Known providers: vidssave, cobalt, ytdlp, sample.
+    # vidssave first: it is the only provider whose YouTube resolution cannot
+    # be IP-blocked on our side (vidssave's own resolvers do the talking and
+    # its CDN links are not IP-locked).
+    downloader_providers: str = "vidssave,cobalt,ytdlp"
+    vidssave_enabled: bool = True  # kill switch (CLIPPER_VIDSSAVE_ENABLED=false)
+    # Optional API override (self-hosted mirror / future host change).
+    # Empty = auto: production API first, then their staging endpoint (which
+    # currently accepts datacenter IPs) as fallback.
+    vidssave_api_url: str = ""
+    vidssave_timeout_seconds: float = 30.0  # per HTTP call
+    vidssave_task_timeout_seconds: float = 600.0  # muxing task budget (SSE)
+    # Extra upstream hosts the /api/media/proxy endpoint may relay to
+    # (sandbox/e2e testing only — production leaves this EMPTY).
+    media_proxy_extra_hosts: str = ""
     cobalt_api_url: str = ""  # e.g. your cobalt instance URL (REQUIRED for cobalt)
     cobalt_api_key: str = ""  # optional bearer token for instances that require auth
     cobalt_timeout_seconds: float = 30.0

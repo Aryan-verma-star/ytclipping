@@ -14,11 +14,13 @@ from app.config import Settings
 from app.downloader.base import DownloaderProvider
 from app.downloader.cobalt import CobaltProvider
 from app.downloader.sample import SampleProvider
+from app.downloader.vidssave import VidsSaveProvider
 from app.downloader.ytdlp import YtDlpProvider
 
 log = logging.getLogger("clipper.downloader")
 
 PROVIDERS: dict[str, type[DownloaderProvider]] = {
+    "vidssave": VidsSaveProvider,
     "cobalt": CobaltProvider,
     "ytdlp": YtDlpProvider,
     "sample": SampleProvider,

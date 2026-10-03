@@ -29,19 +29,20 @@ from app.core.errors import AppError, PayloadTooLargeError, RateLimitError
 from app.core.ratelimit import RateLimiter, client_ip
 from app.db.base import Database
 from app.downloader.registry import build_provider_chain
-from app.api import routes_ai, routes_jobs, routes_meta, routes_previews, routes_styles
+from app.api import routes_ai, routes_jobs, routes_media, routes_meta, routes_previews, routes_styles
 from app.services.preview import PreviewWorker, recover_stale_previews
 from app.services.retention import RetentionSweeper
 from app.services.worker import JobWorker, recover_stale_jobs
 
 log = logging.getLogger("clipper")
 
-# Media endpoints (clip files, preview video/stream, filmstrip tiles) are exempt
-# from the per-IP request counter: a single <video> element legitimately issues
-# dozens of Range requests and a filmstrip loads ~60 tiles at once. Abuse on
-# these paths is bounded by retention + download caps instead.
+# Media endpoints (clip files, preview video/stream, filmstrip tiles, and
+# the vidssave media relay) are exempt from the per-IP request counter: a
+# single <video> element legitimately issues dozens of Range requests and a
+# filmstrip loads ~60 tiles at once. Abuse on these paths is bounded by
+# retention + download caps + the proxy's vidssave-only URL allowlist.
 _MEDIA_PATH_RE = re.compile(
-    r"^/api/(?:jobs/[^/]+/clip|previews/[^/]+/(?:video|stream|thumbs/[^/]+))$"
+    r"^/api/(?:jobs/[^/]+/clip|previews/[^/]+/(?:video|stream|thumbs/[^/]+)|media/proxy)$"
 )
 
 
@@ -244,6 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_jobs.router, prefix=api_prefix)
     app.include_router(routes_previews.router, prefix=api_prefix)
     app.include_router(routes_ai.router, prefix=api_prefix)
+    app.include_router(routes_media.router, prefix=api_prefix)
 
     # ---------------- static frontend (mounted last: / → index.html) ----------------
     frontend_dir = settings.resolved_frontend_dir

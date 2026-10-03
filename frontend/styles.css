@@ -308,6 +308,19 @@ footer {
 }
 .editor-sub { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
 
+/* "save original file" link — browser-native download of the resolved
+ * source (shown by the browser engine once a direct URL exists) */
+.save-original {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  color: var(--accent, #06b6d4);
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+}
+.save-original:hover { opacity: 0.8; }
+.save-original.hidden { display: none; }
+
 .editor-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

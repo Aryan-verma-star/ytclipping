@@ -367,7 +367,7 @@ def test_ytdlp_resolve_stream_failure_returns_none(tmp_path, monkeypatch):
 # ---------------- registry & chain fallback ----------------
 
 def test_registry_knows_all_shipped_providers():
-    assert set(PROVIDERS) == {"cobalt", "ytdlp", "sample"}
+    assert set(PROVIDERS) == {"vidssave", "cobalt", "ytdlp", "sample"}
 
 
 def test_build_chain_order_and_unknown_provider(tmp_path):

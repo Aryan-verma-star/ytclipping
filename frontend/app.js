@@ -110,11 +110,14 @@ var state = {
 
 /* --------------------------- browser engine ------------------------------ */
 
-/* The browser engine is usable when the client engine loaded AND one of its
- * transports is actually reachable: the companion extension, an explicitly
- * configured Cloudflare Worker proxy, or the sandbox dev proxy. */
+/* The browser engine is usable when the client engine loaded AND a
+ * resolution path is actually reachable: the built-in vidssave resolver
+ * (works from any residential browser — no setup), the companion extension,
+ * an explicitly configured Cloudflare Worker proxy, or the sandbox dev
+ * proxy. */
 function clientEngineUsable() {
   if (!window.ClientEngine || !window.YTResolver) return false;
+  if (window.VidsSave && window.aesjs) return true; // vidssave path
   if (window.__YTCP__ && window.__YTCP__.version === 1) return true;
   if (String(window.CLIPPER_YT_PROXY || "").trim()) return true;
   if (GATEWAY_PORT) return true; // sandbox preview + node proxy/dev-server.mjs
@@ -345,9 +348,22 @@ function clientApplyInfo(info) {
 
   var video = $("player");
   state.playerPreviewId = "client:" + (info.videoId || info.directUrl);
-  video.src = info.playbackUrl;
-  video.classList.remove("dimmed");
-  $("player-preparing").classList.add("hidden");
+  if (info.thumbnail && !video.getAttribute("poster")) {
+    video.poster = info.thumbnail; // vidssave meta arrives before the URL
+  }
+  if (info.playbackUrl) {
+    video.src = info.playbackUrl;
+    video.classList.remove("dimmed");
+    $("player-preparing").classList.add("hidden");
+  } else {
+    /* vidssave: no playable URL until the muxing task finishes — the
+     * timeline is already fully usable (duration known from the parse);
+     * clientCache lights the player up the moment the link lands. */
+    video.removeAttribute("src");
+    video.classList.add("dimmed");
+    $("player-preparing").classList.remove("hidden");
+  }
+  updateSaveOriginalLink(info);
 
   // direct files may not know their duration until the player decodes it
   if (!state.timeline) {
@@ -372,27 +388,74 @@ function clientApplyInfo(info) {
 
   startReelsPreview();
   updateTransport();
-  setCachePill("busy", "Caching in your browser…");
+  setCachePill("busy", info.kind === "vidssave" ? "Preparing file…" : "Caching in your browser…");
   updateClientCacheNote();
   editor.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/* "Save original" — a plain <a> to the remote file. Browser navigations
+ * ignore CORS, so vidssave's redirect link downloads natively without the
+ * backend proxy (zero server bandwidth). Hidden until a URL exists. */
+function updateSaveOriginalLink(info) {
+  var bar = $("video-sub");
+  var link = $("save-original");
+  if (!bar || !link) return;
+  var url = info && (info.directUrl || null);
+  if (!url) {
+    link.classList.add("hidden");
+    link.removeAttribute("href");
+    return;
+  }
+  link.href = url;
+  link.setAttribute("download", clientClipName().replace(/-9x16\.mp4$/, ".mp4"));
+  link.classList.remove("hidden");
+}
+
 /* Cache to OPFS (serialized — the engine writes one fixed file name) and
  * generate the filmstrip from the local copy. Progress goes to the pill +
- * timeline fill, exactly like the server flow. */
+ * timeline fill, exactly like the server flow. vidssave sources additionally
+ * run their server-side muxing task first (progress shown as "Preparing"). */
 function clientCache(info, token) {
   updateClientCacheNote();
+
+  /* vidssave: kick the task ourselves (memoized in the info object) so the
+   * player lights up with the URL the moment it exists — before the OPFS
+   * download starts. cacheSource()'s ensureStream() reuses the same promise. */
+  var prepare =
+    info.kind === "vidssave" && !info.playbackUrl
+      ? info.getStreamUrl({
+          onProgress: function (pct) {
+            if (token !== state.previewToken) return;
+            setCachePill("busy", "Preparing file · " + Math.round(pct) + "%");
+          },
+        }).then(function (res) {
+          if (token !== state.previewToken) return null;
+          var video = $("player");
+          video.src = res.proxied;
+          video.classList.remove("dimmed");
+          $("player-preparing").classList.add("hidden");
+          updateSaveOriginalLink(info);
+          return res;
+        })
+      : Promise.resolve(null);
+
   var run = function () {
-    return window.ClientEngine.cacheSource(info, {
-      onProgress: function (ratio, done) {
-        if (token !== state.previewToken) return;
-        var label = ratio == null ? fmtBytes(done) : Math.round(ratio * 100) + "%";
-        setCachePill("busy", "Caching in your browser · " + label);
-        if (state.timeline) {
-          state.timeline.setProgress(ratio == null ? null : Math.min(0.999, ratio));
-        }
-        updateClientCacheNote(label);
-      },
+    return prepare.then(function () {
+      return window.ClientEngine.cacheSource(info, {
+        onTaskProgress: function (pct) {
+          if (token !== state.previewToken) return;
+          setCachePill("busy", "Preparing file · " + Math.round(pct) + "%");
+        },
+        onProgress: function (ratio, done) {
+          if (token !== state.previewToken) return;
+          var label = ratio == null ? fmtBytes(done) : Math.round(ratio * 100) + "%";
+          setCachePill("busy", "Caching in your browser · " + label);
+          if (state.timeline) {
+            state.timeline.setProgress(ratio == null ? null : Math.min(0.999, ratio));
+          }
+          updateClientCacheNote(label);
+        },
+      });
     });
   };
 

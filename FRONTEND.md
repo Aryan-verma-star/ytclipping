@@ -198,32 +198,46 @@ The frontend ships a second, fully client-side engine — toggle it with the
 reachable). It exists because YouTube bot-checks datacenter IPs, which makes
 the server-side download path unreliable on free hosting.
 
-**Flow** (all on the user's device): `frontend/js/yt-resolver.js` calls the
-innertube `player` API (TVHTML5 / ANDROID / IOS / TVHTML5_SIMPLY contexts,
-pre-signed URLs, same client list yt-dlp uses) through a transport →
-`frontend/js/client-engine.js` plays the stream immediately, downloads it in
-8 MB ranged chunks into **OPFS** (`ytcc-source.mp4`), draws the 60-thumbnail
-filmstrip from the local file, then `frontend/js/ffmpeg-client.js` runs the
-vendored **@ffmpeg/core wasm** (`frontend/vendor/ffmpeg/`) in a module Web
-Worker to cut + reframe to 9:16 (blur or black backdrop, 720×1280 default,
-1080×1920 optional). The result is a blob: previewed in `#preview` and
-downloaded via a `download`-attributed object URL. No server job is created
-(client clips don't appear in History).
+**Flow** (all on the user's device): `frontend/js/vidssave-client.js` calls
+vidssave.com's resolver API DIRECTLY from the browser (reverse-engineered
+2026-10-03: `media/parse` → `media/download` task → SSE `download_query` →
+signed CDN mp4 with video+audio already muxed; AES-256-CBC response bodies
+decrypted in-page with the vendored `frontend/vendor/aes-js/aes.js`) →
+`frontend/js/client-engine.js` waits for the muxing task ("Preparing file ·
+N%"), streams/plays the result through the backend's same-origin
+`GET /api/media/proxy` relay (their CDN sends no CORS headers), downloads it
+in 8 MB ranged chunks into **OPFS** (`ytcc-source.mp4`) with retry+resume for
+their CDN's transient 403s, draws the 60-thumbnail filmstrip from the local
+file, then `frontend/js/ffmpeg-client.js` runs the vendored **@ffmpeg/core
+wasm** (`frontend/vendor/ffmpeg/`) in a module Web Worker to cut + reframe
+to 9:16 (blur or black backdrop, 720×1280 default, 1080×1920 optional).
+The result is a blob: previewed in `#preview` and downloaded via a
+`download`-attributed object URL. No server job is created (client clips
+don't appear in History). A "save original file" link (plain `<a>`, no CORS
+needed) offers the raw vidssave file once its URL exists.
 
-**Transports** (checked in this order):
-1. `window.__YTCP__` — companion Chrome extension bridge (user's own IP;
+**Resolution paths** (checked in this order):
+1. `window.VidsSave` — the built-in vidssave resolver (ALWAYS available;
+   runs from the user's residential IP, which their risk check accepts —
+   zero setup, no proxy, no extension).
+2. `window.__YTCP__` — companion Chrome extension bridge (user's own IP;
    contract in `proxy/DEPLOY.md`; extension not yet in this repo).
-2. `window.CLIPPER_YT_PROXY` — Cloudflare Worker CORS pipe (set it in
+3. `window.CLIPPER_YT_PROXY` — Cloudflare Worker CORS pipe (set it in
    `frontend/index.html` head; deploy guide: `proxy/DEPLOY.md`).
-3. Sandbox dev proxy — automatic when the page runs behind
+4. Sandbox dev proxy — automatic when the page runs behind
    `?XTransformPort=` (start with `node proxy/dev-server.mjs`, port 8020).
 
-**Caps**: 400 MB source, muxed (video+audio) itags only — the resolver
-skips ciphered WEB-client URLs. `background` style param maps to the same
+**Testing hook**: append `?vsapi=dev` to the page URL to point the vidssave
+client at their staging API (tolerates datacenter IPs — useful for sandbox
+e2e runs; production uses the real API).
+
+**Caps**: 400 MB source. `background` style param maps to the same
 blur/black choices as the server's "Original" style. Verified end-to-end in
-a headless browser (OPFS → filmstrip → wasm 9:16 render → blob, twice,
-zero console errors) using a direct media URL; YouTube resolution needs a
-non-bot-flagged transport (extension or CF worker).
+a headless browser (vidssave resolve → proxy relay → OPFS → filmstrip →
+wasm 9:16 render → blob, zero console errors); the vidssave protocol itself
+(parse/task/SSE/redirect/CDN + AES round-trip) was validated live with curl
+and Python. If vidssave flags a network (`analyze_risk`), the UI says so and
+falls back to the innertube transports when configured.
 
 ## 6. The current frontend, file by file
 

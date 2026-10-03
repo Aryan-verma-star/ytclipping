@@ -19,19 +19,20 @@ for future AI-assisted clipping.
 ```
 backend/            FastAPI application (Phase 1)
   app/
-    api/            REST routes (jobs, previews, styles, health/meta, AI stub)
+    api/            REST routes (jobs, previews, styles, health/meta, media proxy, AI stub)
     core/           validation, ffmpeg runner, rate limiting, errors
     db/             SQLAlchemy models, engine factory, repository
-    downloader/     pluggable providers: cobalt | ytdlp | sample
+    downloader/     pluggable providers: vidssave | cobalt | ytdlp | sample
     styles/         pluggable clip styles (auto-discovered)
     services/       orchestrator, preview pipeline, workers, retention sweeper
     ai/             Phase 4 extension point (protocol + stub, no logic)
   alembic/          migrations (0001 = jobs, 0002 = previews + jobs.preview_id)
-  tests/            148 offline tests (providers mocked/synthetic)
+  tests/            192 offline tests (providers mocked/synthetic)
 frontend/           Plain HTML/JS editor UI served by the backend (Phases 2–3)
-  js/               browser engine: yt-resolver + client-engine + ffmpeg worker
+  js/               browser engine: vidssave-client + yt-resolver + client-engine + ffmpeg worker
   vendor/ffmpeg/    @ffmpeg/core (wasm) — powers in-browser clipping
-proxy/              CORS pass-through for the browser engine
+  vendor/aes-js/    AES-CBC — decrypts vidssave API responses in the page
+proxy/              CORS pass-through for the browser engine (innertube fallback)
   worker.js         Cloudflare Worker (production)
   dev-server.mjs    Node dev mirror (sandbox/local)
   DEPLOY.md         2-minute deploy guide + extension bridge contract
@@ -225,23 +226,46 @@ path (yt-dlp / cobalt) only works reliably from residential IPs or with
 login cookies. The **browser engine** removes the server from the equation
 entirely — the header chip toggles `engine: browser` / `engine: server`:
 
-1. **Resolve** — the page calls YouTube's innertube `player` API itself
-   (TV/Android/iOS client contexts, same ones yt-dlp uses) through a
-   transport: the companion Chrome extension (user's own IP) or a tiny
-   Cloudflare Worker CORS pipe (`proxy/worker.js`, deploy in ~2 minutes —
-   see `proxy/DEPLOY.md`; set `window.CLIPPER_YT_PROXY` in
-   `frontend/index.html` afterwards).
-2. **Play instantly** — the `<video>` element streams the resolved URL
-   (Range-supported) while the full file downloads.
-3. **Cache to OPFS** — 8 MB ranged chunks into the browser's Origin Private
-   File System: disk, not RAM, so 300–400 MB sources stay safe.
-4. **Clip locally** — `ffmpeg.wasm` (vendored in `frontend/vendor/ffmpeg/`)
+1. **Resolve via vidssave.com (default, zero setup)** — the page calls
+   vidssave.com's own resolver API directly from the USER's browser
+   (`frontend/js/vidssave-client.js`, reverse-engineered 2026-10-03):
+   `media/parse` → `media/download` task → SSE `download_query` → a signed
+   CDN mp4 (video+audio already muxed server-side). Their API sends
+   `Access-Control-Allow-Origin: *` and their risk check passes residential
+   browsers — which is exactly why this runs in the page, not on the server.
+   The `data` fields are AES-256-CBC encrypted; the page decrypts them with
+   the vendored `aes-js` (`frontend/vendor/aes-js/`).
+2. **Fallback transports** — if vidssave refuses a network, resolution falls
+   back to YouTube's innertube `player` API through the companion Chrome
+   extension (user's own IP) or a Cloudflare Worker CORS pipe
+   (`proxy/worker.js` — see `proxy/DEPLOY.md`, set `window.CLIPPER_YT_PROXY`
+   in `frontend/index.html`).
+3. **Fetch + play** — vidssave's CDN sends no CORS headers, so the bytes
+   flow through the backend's same-origin relay
+   `GET /api/media/proxy?url=<vidssave link>` (Range passthrough,
+   vidssave-hosts-only allowlist): the `<video>` streams it and the cache
+   layer pulls 8 MB chunks from it. A "save original file" link also offers
+   the raw download straight from vidssave (browser navigations need no
+   CORS). The innertube paths stream googlevideo URLs as before.
+4. **Cache to OPFS** — 8 MB ranged chunks into the browser's Origin Private
+   File System: disk, not RAM, so 300–400 MB sources stay safe. Transient
+   CDN 403s (their staging pipeline does this) are retried with backoff and
+   Range resume.
+5. **Clip locally** — `ffmpeg.wasm` (vendored in `frontend/vendor/ffmpeg/`)
    cuts and reframes to 9:16 with the blurred backdrop, inside a Web Worker;
    the result is a local blob download. No server round-trip at all.
 
-Verified end-to-end in a headless browser (OPFS cache → 60-thumbnail
-filmstrip → wasm 9:16 render → blob download, twice, zero console errors).
+Verified end-to-end in a headless browser (vidssave resolve → proxy relay →
+OPFS cache → filmstrip → wasm 9:16 render → blob download; the vidssave API
+calls themselves were validated live against their staging endpoint —
+parse/task/SSE/CDN — including the AES decryption round-trip).
 Direct media URLs (any `https://…​.mp4`) also work — handy for testing.
+
+The **server engine** got the same superpower: the `vidssave` provider
+(`backend/app/downloader/vidssave.py`) runs the identical protocol
+server-side (production API first, their staging endpoint — which tolerates
+datacenter IPs — as fallback), so even the server pipeline works from
+Render's blocked IP. It is now the first provider in the default chain.
 
 ## The timeline editor (Phase 3) — instant load (Phase 3.5)
 
