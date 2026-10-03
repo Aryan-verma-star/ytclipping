@@ -369,11 +369,24 @@ class VidsSaveProvider(DownloaderProvider):
         Their CDN intermittently 403s perfectly good signed links (observed
         live on the staging pipeline), so transient failures retry with a
         backoff and resume from the bytes already on disk.
+
+        Trickle protection (incident 2026-10-03): the httpx read timeout only
+        bounds IDLE gaps between chunks — a stream that dribbles a few bytes
+        every minute can hang the single preview worker for hours. Two guards:
+        a stall detector (minimum bytes per minute, resumes via the normal
+        retry path) and an overall wall-clock deadline (hard failure — the
+        queue must keep moving).
         """
         cap = int(self.settings.max_download_bytes)
         timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
         retryable = {403, 408, 429, 500, 502, 503, 504}
         max_tries = 5
+
+        deadline = time.monotonic() + float(self.settings.vidssave_download_timeout_seconds)
+        stall_window = 60.0  # seconds per measurement window
+        stall_bytes = 262_144  # 256 KB/min — slower than this counts as stalled
+        window_started = time.monotonic()
+        window_written = 0
 
         written = 0
         total: int | None = None
@@ -409,6 +422,30 @@ class VidsSaveProvider(DownloaderProvider):
                         total = int(resp.headers["content-length"])
                     with open(target, "ab" if written else "wb") as fh:
                         for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                            now = time.monotonic()
+                            if now > deadline:
+                                raise ProviderError(
+                                    "vidssave CDN download exceeded its time budget "
+                                    f"({int(self.settings.vidssave_download_timeout_seconds)}s) — "
+                                    "aborted so the queue can move on; try again.",
+                                    provider=self.name,
+                                    transient=True,
+                                )
+                            if now - window_started >= stall_window:
+                                if written - window_written < stall_bytes:
+                                    # trickling stream — one resume attempt via
+                                    # the normal retry path, then the deadline
+                                    # above ends it for good
+                                    log.warning(
+                                        "vidssave download stalled at %d bytes "
+                                        "(%d in the last %ds) — resuming",
+                                        written,
+                                        written - window_written,
+                                        int(now - window_started),
+                                    )
+                                    raise _TransientUpstream(0)
+                                window_started = now
+                                window_written = written
                             written += len(chunk)
                             if written > cap:
                                 raise ProviderError(
@@ -434,6 +471,10 @@ class VidsSaveProvider(DownloaderProvider):
                         provider=self.name,
                         transient=True,
                     )
+                # fresh stall window — a resumed fast stream must not inherit
+                # the trickle statistics of the attempt that just died
+                window_started = time.monotonic()
+                window_written = written
                 time.sleep(min(4.0, 0.8 * (6 - max_tries)))
             except httpx.HTTPError as exc:
                 raise ProviderError(

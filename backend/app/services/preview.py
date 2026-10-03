@@ -374,6 +374,9 @@ class PreviewWorker(threading.Thread):
         self.settings = settings
         self.providers = providers
         self.stop_event = stop_event
+        # supervision hooks: what this worker is inside right now (None = idle)
+        self.current_id: str | None = None
+        self.current_since: float | None = None
 
     def run(self) -> None:
         log.info("preview worker started")
@@ -384,7 +387,13 @@ class PreviewWorker(threading.Thread):
                 if preview_id is None:
                     self.stop_event.wait(self.settings.worker_poll_interval_seconds)
                     continue
-                process_preview(preview_id, self.db, self.settings, self.providers)
+                self.current_id = preview_id
+                self.current_since = time.monotonic()
+                try:
+                    process_preview(preview_id, self.db, self.settings, self.providers)
+                finally:
+                    self.current_id = None
+                    self.current_since = None
             except Exception:  # pragma: no cover - the loop must never die
                 log.exception("preview worker loop iteration failed")
                 self.stop_event.wait(self.settings.worker_poll_interval_seconds)
@@ -392,6 +401,21 @@ class PreviewWorker(threading.Thread):
 
     def stop(self) -> None:
         self.stop_event.set()
+
+
+def fail_stuck_preview(db: Database, preview_id: str, message: str | None = None) -> None:
+    """Supervisor hook: a preview stuck in one worker for too long becomes failed.
+
+    The worker thread itself is replaced by the supervisor — this only fixes
+    the row (and fails jobs waiting on the preview) so the UI stops waiting
+    and shows an actionable message.
+    """
+    text = message or (
+        "Preparing this video took unusually long (the server was busy or the "
+        "source too heavy) and was stopped. Please load it again — the retry "
+        "starts fresh, and uploads always work."
+    )
+    _fail(db, preview_id, text)
 
 
 def recover_stale_previews(db: Database) -> int:

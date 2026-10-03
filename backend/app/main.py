@@ -38,9 +38,10 @@ from app.api import (
     routes_styles,
     routes_uploads,
 )
-from app.services.preview import PreviewWorker, recover_stale_previews
+from app.services.preview import PreviewWorker, fail_stuck_preview, recover_stale_previews
 from app.services.retention import RetentionSweeper
-from app.services.worker import JobWorker, recover_stale_jobs
+from app.services.supervisor import WorkerSupervisor
+from app.services.worker import JobWorker, fail_stuck_job, recover_stale_jobs
 
 log = logging.getLogger("clipper")
 
@@ -95,24 +96,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         stop_event = threading.Event()
-        worker = None
-        preview_worker = None
-        sweeper = None
+        supervisor = None
         try:
             if settings.init_db_on_startup:
                 if _run_migrations(db):
                     log.info("database schema is up to date (alembic)")
             recover_stale_jobs(db)
             recover_stale_previews(db)
+            # Workers are started AND supervised: the watchdog restarts dead
+            # threads and replaces ones stuck inside a single item beyond a
+            # hard wall (incident 2026-10-03: a hung preview worker blocked
+            # the whole queue until a manual service restart).
+            supervisor = WorkerSupervisor(db, settings, stop_event)
+            app.state.supervisor = supervisor
             if settings.worker_enabled:
-                worker = JobWorker(db, settings, providers, stop_event)
-                worker.start()
-                app.state.worker = worker
-                preview_worker = PreviewWorker(db, settings, providers, stop_event)
-                preview_worker.start()
-                app.state.preview_worker = preview_worker
-            sweeper = RetentionSweeper(db, settings, stop_event)
-            sweeper.start()
+                supervisor.manage(
+                    "job_worker",
+                    lambda: JobWorker(db, settings, providers, stop_event),
+                    wall_seconds=settings.job_worker_wall_seconds,
+                    on_stuck=fail_stuck_job,
+                )
+                supervisor.manage(
+                    "preview_worker",
+                    lambda: PreviewWorker(db, settings, providers, stop_event),
+                    wall_seconds=settings.preview_worker_wall_seconds,
+                    on_stuck=fail_stuck_preview,
+                )
+            supervisor.manage(
+                "retention_sweeper",
+                lambda: RetentionSweeper(db, settings, stop_event),
+            )
+            supervisor.start()
             app.state.stop_event = stop_event
             log.info(
                 "%s v%s ready (env=%s, providers=%s)",
@@ -142,7 +156,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.providers = providers
-    app.state.worker = None
+    app.state.supervisor = None
 
     # ---------------- error shaping ----------------
     @app.exception_handler(AppError)

@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     vidssave_api_url: str = ""
     vidssave_timeout_seconds: float = 30.0  # per HTTP call
     vidssave_task_timeout_seconds: float = 600.0  # muxing task budget (SSE)
+    # Overall wall-clock budget for ONE CDN file download (the httpx read
+    # timeout only bounds IDLE gaps — a trickling stream could otherwise
+    # hold the single preview worker hostage for hours; incident 2026-10-03).
+    vidssave_download_timeout_seconds: float = 480.0
     # Extra upstream hosts the /api/media/proxy endpoint may relay to
     # (sandbox/e2e testing only — production leaves this EMPTY).
     media_proxy_extra_hosts: str = ""
@@ -125,6 +129,18 @@ class Settings(BaseSettings):
     # --- job worker -------------------------------------------------------
     worker_enabled: bool = True
     worker_poll_interval_seconds: float = 1.0
+
+    # --- worker supervisor (watchdog) --------------------------------------
+    # How often dead/stuck worker threads are detected and replaced.
+    supervisor_interval_seconds: float = 30.0
+    # ONE preview may take at most this long before the supervisor fails it
+    # and replaces the worker (set just under the 30-min sweeper wall so the
+    # supervisor reacts first, with a clearer message).
+    preview_worker_wall_seconds: float = 1500.0
+    # ONE clip job may take at most this long — must exceed the 3600 s ffmpeg
+    # cap so legitimate long renders are never killed (10-min clips on a
+    # free-tier CPU can legitimately run tens of minutes).
+    job_worker_wall_seconds: float = 4200.0
 
     # --- abuse protection --------------------------------------------------
     rate_limit_per_minute: int = 60  # general API requests per client IP

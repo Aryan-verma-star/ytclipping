@@ -32,14 +32,29 @@ def health(request: Request) -> JSONResponse:
         db_error = None
 
     ffmpeg_ok = binaries_available()
-    worker_alive = bool(getattr(request.app.state, "worker", None))
+
+    # Worker liveness, reported per thread via the supervisor (the watchdog
+    # heals dead/stuck threads within one audit interval — flags here are for
+    # diagnosis, not for failing the deploy health check).
+    sup = getattr(request.app.state, "supervisor", None)
+
+    def _worker_state(name: str) -> str:
+        if sup is None:
+            return "disabled"
+        alive = sup.is_alive(name)
+        if alive is None:
+            return "unmanaged"
+        repl = sup.replacements(name)
+        return ("running" if alive else "dead") + (f"(replaced {repl}x)" if repl else "")
 
     body = {
         "status": "ok" if (db_ok and ffmpeg_ok) else "degraded",
         "checks": {
             "database": "ok" if db_ok else "error",
             "ffmpeg": "ok" if ffmpeg_ok else "missing",
-            "job_worker": "running" if worker_alive else "disabled",
+            "job_worker": _worker_state("job_worker"),
+            "preview_worker": _worker_state("preview_worker"),
+            "retention_sweeper": _worker_state("retention_sweeper"),
         },
         "provider_chain": [p.name for p in request.app.state.providers],
         "ffmpeg_version": ffmpeg_version(),

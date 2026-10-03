@@ -279,7 +279,11 @@ function pollPreview(id, token) {
         attempt += 1;
         if (attempt > 400) {
           $("load-btn").disabled = false;
-          setLoadStatus("error", "Gave up waiting for the preview — try again.");
+          setLoadStatus(
+            "error",
+            "Gave up waiting for the server — it may be busy or still waking up " +
+              "(free tier). Try again in a minute, or upload the video file instead."
+          );
           return;
         }
         state.previewTimer = setTimeout(tick, editorLive ? 1500 : 700);
