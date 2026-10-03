@@ -132,9 +132,9 @@ function updateEngineChip() {
   chip.textContent = "engine: " + (browser ? "browser" : "server");
   chip.classList.toggle("active", browser);
   chip.title = browser
-    ? "Browser engine active: downloads + ffmpeg.wasm clipping run on YOUR device — no server IP can be banned. Click to switch back to the server engine."
+    ? "Browser engine: uploaded files render locally with ffmpeg.wasm (never uploaded). YouTube links are handled by the server by default — vidssave's download links are network-bound, so a hosted backend cannot relay them; forcing the browser engine for YouTube works on local/same-IP setups or with the companion extension. Click to switch the server engine."
     : usable
-      ? "Server engine active. Click to switch to the browser engine (downloads and clipping run on your device)."
+      ? "Server engine active. Click to switch to the browser engine (uploads render on your device; YouTube resolves in your browser — needs a local/same-IP backend or the companion extension)."
       : "Server engine active. The browser engine needs the companion extension or a configured proxy (see proxy/DEPLOY.md).";
 }
 
@@ -167,9 +167,32 @@ function clearLoadStatus() {
 function loadPreview(url) {
   url = (url || "").trim();
   if (!url) return;
-  if (state.engine === "browser" && clientEngineUsable()) {
+  /* Routing: the browser engine resolves YouTube from the USER's IP, but
+   * vidssave's download links are bound to the network that created them
+   * (and its CDN sends no CORS headers), so a HOSTED backend on a different
+   * IP cannot relay the bytes. YouTube therefore goes to the server engine
+   * (whose vidssave provider creates AND downloads the task itself) unless
+   * the user explicitly chose the browser engine — right for local
+   * same-IP setups and the companion extension. Uploads and direct media
+   * URLs always stay client-side when the engine allows it. */
+  var ytUrl = LOOKS_LIKE_YT.test(url);
+  var wantsClient =
+    state.engine === "browser" &&
+    clientEngineUsable() &&
+    (state.engineExplicit || !ytUrl);
+  if (wantsClient) {
     clientLoad(url);
     return;
+  }
+  if (state.engine === "browser" && ytUrl && clientEngineUsable()) {
+    /* fresh default on a hosted deployment — say why the server is handling it */
+    setLoadStatus(
+      "busy",
+      "Loading via the server (its resolver works from any IP) — the browser " +
+        "engine still renders uploaded files locally. Toggle the engine chip to override."
+    );
+  } else {
+    setLoadStatus("busy", "Loading video…");
   }
   var token = ++state.previewToken;
   if (state.previewTimer) {
@@ -177,7 +200,6 @@ function loadPreview(url) {
     state.previewTimer = null;
   }
   $("load-btn").disabled = true;
-  setLoadStatus("busy", "Loading video…");
 
   request("/api/previews", { method: "POST", body: JSON.stringify({ url: url }) })
     .then(function (preview) {
@@ -603,7 +625,15 @@ function clientCache(info, token) {
     function (err) {
       if (token !== state.previewToken) return;
       setCachePill("error", "Local cache failed");
-      showError("Browser download failed: " + err.message);
+      var relayed = /HTTP 5\d\d|HTTP 403/.test(String(err && err.message));
+      showError(
+        "Browser download failed: " + err.message +
+        (relayed
+          ? " — vidssave download links are bound to the network that created them, " +
+            "so a hosted backend cannot relay them. Switch the engine to server " +
+            "(top-right chip) or upload the video file directly."
+          : "")
+      );
       updateClientCacheNote();
     }
   );
@@ -1476,8 +1506,9 @@ function bindEvents() {
         return;
       }
       state.engine = target;
+      state.engineExplicit = true;
       try {
-        localStorage.setItem("ytcc-engine", target);
+        localStorage.setItem("ytcc-engine-v2", target);
       } catch (e) {
         /* private mode — fine, next boot defaults again */
       }
@@ -1613,12 +1644,16 @@ state.lastAutoLoad = "";
 
 /* Engine boot: default to the browser engine when one of its transports is
  * reachable, then honor the persisted user choice (downgrading a stale
- * "browser" choice when no transport is available anymore). */
+ * "browser" choice when no transport is available anymore). YouTube URLs
+ * route to the server engine unless the choice was explicit — see
+ * loadPreview(). */
+state.engineExplicit = false;
 state.engine = clientEngineUsable() ? "browser" : "server";
 try {
-  var savedEngine = localStorage.getItem("ytcc-engine");
+  var savedEngine = localStorage.getItem("ytcc-engine-v2");
   if (savedEngine === "browser" || savedEngine === "server") {
     state.engine = savedEngine;
+    state.engineExplicit = true;
   }
 } catch (e) {
   /* private mode */

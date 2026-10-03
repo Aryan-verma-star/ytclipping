@@ -230,7 +230,18 @@ job status with the provider's own message.
 YouTube aggressively bot-checks datacenter IPs, so the server-side download
 path (yt-dlp / cobalt) only works reliably from residential IPs or with
 login cookies. The **browser engine** removes the server from the equation
-entirely — the header chip toggles `engine: browser` / `engine: server`:
+for the things it can do locally — the header chip toggles `engine: browser`
+/ `engine: server`:
+
+0. **Default routing** — uploaded files always render in the browser with
+   ffmpeg.wasm (the file never leaves the device). YouTube links load via
+   the **server engine** by default: vidssave's download links are signed
+   for the IP that created them and its CDN sends no CORS headers, so a
+   hosted backend cannot relay bytes for a link the user's browser created
+   — but the server's own vidssave provider (create + download from the
+   same IP) works fine, including on Render's datacenter IP (verified live
+   2026-10-03). Forcing the browser engine for YouTube (chip click) makes
+   sense on local/same-IP setups or with the companion extension.
 
 1. **Resolve via vidssave.com (default, zero setup)** — the page calls
    vidssave.com's own resolver API directly from the USER's browser

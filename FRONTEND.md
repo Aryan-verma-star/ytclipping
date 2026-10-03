@@ -216,6 +216,19 @@ The result is a blob: previewed in `#preview` and downloaded via a
 don't appear in History). A "save original file" link (plain `<a>`, no CORS
 needed) offers the raw vidssave file once its URL exists.
 
+**Routing (2026-10-03, after live debugging on Render)**: vidssave's
+`download_redirect` signs CDN URLs **for the IP that created the task**, and
+its CDN sends no CORS headers — so a backend hosted on a different network
+than the user **cannot relay the bytes** (the browser resolves from the
+user's IP, the link only redeems from that same IP). Therefore: **YouTube
+URLs load through the SERVER engine by default** (its vidssave provider
+creates AND downloads the task itself — verified working on Render), while
+**uploads always render in the browser** (ffmpeg.wasm, file never uploaded).
+An explicit engine-chip choice (`ytcc-engine-v2` in localStorage) overrides
+the routing — the browser engine for YouTube then works on local/same-IP
+setups or with the companion extension (whose CORS-exempt `fetchRange` can
+read the CDN bytes).
+
 **Resolution paths** (checked in this order):
 1. `window.VidsSave` — the built-in vidssave resolver (ALWAYS available;
    runs from the user's residential IP — zero setup, no proxy, no
