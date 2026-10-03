@@ -1,0 +1,11 @@
+# Backend dependencies (Python 3.12)
+fastapi==0.128.0
+uvicorn[standard]==0.44.0
+sqlalchemy==2.1.3
+alembic==1.20.0
+pydantic==2.12.5
+pydantic-settings==2.13.1
+httpx==0.28.1
+yt-dlp==2026.8.19
+# Postgres driver (production: Neon). Not needed for the SQLite dev default.
+psycopg2-binary==2.9.13

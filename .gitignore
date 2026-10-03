@@ -1,0 +1,77 @@
+# ============================================================================
+# YouTube Clipper — .gitignore
+# The GitHub repo should contain ONLY: backend/, frontend/, docs/, scripts/,
+# Dockerfile, render.yaml, README.md, .env.example.
+# Everything else below is local test output, secrets, or build-sandbox
+# scaffolding that the deployed app does not use.
+# ============================================================================
+
+# --- secrets (NEVER commit these) ---
+# Local env files (keep .env.example!)
+.env
+.env.*
+!.env.example
+backend/.env
+# YouTube login cookies for yt-dlp datacenter-IP bot checks.
+# On Render, upload this as a SECRET FILE instead of committing it.
+cookies.txt
+*.cookies.txt
+
+# --- app-generated data (clips, previews, thumbnails, local DBs) ---
+backend/data/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- logs / OS ---
+*.log
+.DS_Store
+Thumbs.db
+
+# ============================================================================
+# Build-sandbox scaffolding — the Next.js shell that previews this project in
+# the development sandbox. The deployed app (Docker on Render) never reads
+# these; they stay local only.
+# ============================================================================
+/src/
+/public/
+/prisma/
+/db/
+/examples/
+/tests/
+/research/
+/tool-results/
+/download/
+/node_modules/
+/.next/
+/out/
+/.vercel/
+package.json
+package-lock.json
+bun.lock
+yarn.lock
+pnpm-lock.yaml
+next.config.ts
+tailwind.config.ts
+tsconfig.json
+eslint.config.mjs
+postcss.config.mjs
+components.json
+next-env.d.ts
+*.tsbuildinfo
+Caddyfile
+/coverage/
+/build/

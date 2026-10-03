@@ -1,0 +1,53 @@
+# Render blueprint — free-tier deployment.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# BEFORE FIRST DEPLOY: set CLIPPER_DATABASE_URL to your Neon connection string
+# (Render dashboard → Environment, or the `sync: false` prompts below).
+services:
+  - type: web
+    name: youtube-clipper
+    runtime: docker
+    plan: free
+    # Closest free-tier region to India. Alternatives: oregon (US West,
+    # largest capacity), frankfurt (EU). Change in the dashboard anytime.
+    region: singapore
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: CLIPPER_ENVIRONMENT
+        value: production
+      # Your Neon (or other Postgres) connection string — REQUIRED.
+      # Must start with postgresql:// (or postgres://).
+      - key: CLIPPER_DATABASE_URL
+        sync: false
+      # Ordered provider chain. cobalt needs CLIPPER_COBALT_API_URL (+ optional
+      # key); ytdlp works from residential IPs, or set
+      # CLIPPER_YTDLP_COOKIES_FILE for datacenter-IP bot checks.
+      - key: CLIPPER_DOWNLOADER_PROVIDERS
+        value: cobalt,ytdlp
+      - key: CLIPPER_COBALT_API_URL
+        sync: false
+      - key: CLIPPER_COBALT_API_KEY
+        sync: false
+      - key: CLIPPER_YTDLP_COOKIES_FILE
+        sync: false
+      # Alternative to the file above: paste your cookies.txt CONTENT here
+      # (Render dashboard → Environment). Friendlier than secret files.
+      - key: CLIPPER_YTDLP_COOKIES
+        sync: false
+      # ONLY for split deployments (frontend on Vercel, backend here):
+      # comma-separated browser origins allowed to call the API, e.g.
+      # https://youtube-clipper.vercel.app — leave unset for same-origin.
+      - key: CLIPPER_ALLOWED_ORIGINS
+        sync: false
+      # Sensible free-tier defaults (override as needed):
+      - key: CLIPPER_MAX_CLIP_SECONDS
+        value: "600"
+      - key: CLIPPER_MAX_SOURCE_SECONDS
+        value: "14400"
+      - key: CLIPPER_CLIP_RETENTION_HOURS
+        value: "24"
+      - key: CLIPPER_RATE_LIMIT_PER_MINUTE
+        value: "60"
+      - key: CLIPPER_RATE_LIMIT_JOBS_PER_MINUTE
+        value: "6"

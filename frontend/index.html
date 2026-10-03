@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YouTube Clipper — Reels &amp; Shorts</title>
+  <script>
+    /* Cross-origin deployment (e.g. frontend on Vercel, backend on Render):
+       set this to the backend's public URL, no trailing slash, e.g.
+           window.CLIPPER_API_BASE = "https://youtube-clipper.onrender.com";
+       (and add that Vercel origin to CLIPPER_ALLOWED_ORIGINS on the backend).
+       Leave EMPTY when the backend serves this frontend itself (single
+       Render service) or inside the build sandbox. */
+    window.CLIPPER_API_BASE = "";
+  </script>
+  <script>
+    /* Sandbox-gateway bootstrap: when this page is served through the build
+       sandbox's Caddy gateway (URL contains ?XTransformPort=PORT), asset
+       URLs must repeat that query parameter or the gateway routes them to
+       the wrong local port. In production (Render) the parameter is absent
+       and plain relative URLs are emitted. */
+    (function () {
+      var port = new URLSearchParams(window.location.search).get("XTransformPort") || "";
+      var q = port ? "?XTransformPort=" + encodeURIComponent(port) : "";
+      document.write('<link rel="stylesheet" href="styles.css' + q + '">');
+      document.write('<script defer src="timeline.js' + q + '"><\/script>');
+      document.write('<script defer src="app.js' + q + '"><\/script>');
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <rect x="2" y="4" width="20" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <path d="M2 9h20M7 4v5M12 4v5M17 4v5" stroke="currentColor" stroke-width="1.4" fill="none"/>
+        <path d="M10.2 12.3l4.6 2.7-4.6 2.7z" fill="currentColor"/>
+      </svg>
+      <span class="brand-name">YouTube Clipper</span>
+      <span class="brand-chip">9:16 · Reels &amp; Shorts</span>
+    </div>
+    <div class="topbar-right">
+      <span id="provider-chip" class="chip hidden"></span>
+    </div>
+  </header>
+
+  <main>
+    <details class="notice">
+      <summary>Terms &amp; usage notice</summary>
+      <p>Downloading YouTube content through third-party services may violate YouTube's
+      Terms of Service and may infringe copyright depending on the video and your use.
+      You are responsible for having the rights to clip and use this content.</p>
+    </details>
+
+    <!-- ============ STEP 1 · paste a URL ============ -->
+    <section class="card" id="load-card">
+      <form id="load-form" class="load-row" autocomplete="off">
+        <div class="url-field grow">
+          <label class="sr-only" for="url">YouTube URL</label>
+          <input id="url" name="url" type="text" inputmode="url" spellcheck="false"
+                 placeholder="Paste a YouTube link — youtube.com/watch?v=…" />
+        </div>
+        <button id="load-btn" class="btn primary" type="submit">Load video</button>
+      </form>
+      <div id="load-status" class="load-status hidden" role="status"></div>
+    </section>
+
+    <!-- ============ STEP 2 · editor (appears after the preview loads) ============ -->
+    <section id="editor" class="card hidden">
+      <div class="editor-head">
+        <div class="editor-title">
+          <h2 id="video-title">Source video</h2>
+          <div class="editor-sub mono" id="video-sub"></div>
+        </div>
+        <div class="editor-actions">
+          <span id="cache-pill" class="cache-pill hidden"><span class="dot"></span><span id="cache-pill-text">Caching in background…</span></span>
+          <button id="change-video-btn" class="chip-btn" type="button">Change video</button>
+        </div>
+      </div>
+
+      <div class="editor-grid">
+        <div class="player-pane">
+          <div class="video-shell">
+            <video id="player" preload="metadata" playsinline></video>
+            <div id="player-preparing" class="player-preparing hidden">
+              <div class="spinner"></div>
+              <div class="preparing-title">Preparing the video…</div>
+              <div class="muted" id="player-preparing-sub">The source is being cached in the background</div>
+            </div>
+          </div>
+          <div class="transport">
+            <button id="play-btn" class="icon-btn big" type="button" aria-label="Play or pause">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="ico-play" d="M8 5.5v13l11-6.5z" fill="currentColor"/><path class="ico-pause" d="M7 5h3.6v14H7zM13.4 5H17v14h-3.6z" fill="currentColor"/></svg>
+            </button>
+            <span id="time-readout" class="mono">0:00.0 / 0:00.0</span>
+            <span class="grow"></span>
+            <button id="mute-btn" class="icon-btn" type="button" aria-label="Mute or unmute">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path class="ico-vol" d="M16.5 8.5a5 5 0 010 7M18.8 6a8.2 8.2 0 010 12" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="output-pane">
+          <div class="phone-frame"><canvas id="reels-canvas" width="288" height="512"></canvas></div>
+          <div class="output-caption">Output preview<br><span class="muted">9:16 · 1080×1920 · centered</span></div>
+        </div>
+      </div>
+
+      <div class="tl-block">
+        <div class="tl-toolbar">
+          <div class="sel-readout mono" id="sel-readout" title="Selected range">
+            <span class="k">IN</span> <span id="sel-in">–</span>
+            <span class="arr">→</span>
+            <span class="k">OUT</span> <span id="sel-out">–</span>
+            <span class="dot">·</span>
+            <span id="sel-len">–</span>
+          </div>
+          <div class="tl-tools">
+            <button type="button" class="chip-btn" id="set-in-btn" title="Set IN at playhead (key I)">Set in</button>
+            <button type="button" class="chip-btn" id="set-out-btn" title="Set OUT at playhead (key O)">Set out</button>
+            <span class="zoom-group" role="group" aria-label="Timeline zoom">
+              <button type="button" class="icon-btn" id="zoom-out-btn" title="Zoom out (Ctrl+scroll)">−</button>
+              <button type="button" class="chip-btn" id="zoom-fit-btn" title="Fit whole video">Fit</button>
+              <button type="button" class="icon-btn" id="zoom-in-btn" title="Zoom in (Ctrl+scroll)">+</button>
+            </span>
+          </div>
+        </div>
+
+        <div class="tl-frame">
+          <canvas id="tl-ruler" class="tl-ruler" height="26" aria-hidden="true"></canvas>
+          <div class="tl-viewport" id="tl-viewport" tabindex="0"
+               aria-label="Timeline: scroll to pan, drag handles to select the clip range">
+            <div class="tl-track" id="tl-track">
+              <div class="tl-strip" id="tl-strip"></div>
+              <div class="tl-progress" id="tl-progress" aria-hidden="true"><div class="tl-progress-fill"></div></div>
+              <div class="tl-dim" id="tl-dim-l"></div>
+              <div class="tl-dim" id="tl-dim-r"></div>
+              <div class="tl-sel" id="tl-sel"></div>
+              <div class="tl-handle" id="tl-handle-l" tabindex="0" role="slider"
+                   aria-label="Clip start" aria-valuemin="0"><span class="grip"></span><span class="bubble mono"></span></div>
+              <div class="tl-handle right" id="tl-handle-r" tabindex="0" role="slider"
+                   aria-label="Clip end" aria-valuemin="0"><span class="grip"></span><span class="bubble mono"></span></div>
+              <div class="tl-playhead" id="tl-playhead"><span class="cap"></span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tl-hint">
+          Drag the handles to select · drag inside the selection to move it · scroll to pan ·
+          Ctrl + scroll to zoom · click the ruler to scrub · keys: <span class="kbd">I</span>/<span class="kbd">O</span>
+          set in/out, <span class="kbd">space</span> play
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ STEP 3 · create the clip ============ -->
+    <section class="card" id="clip-card">
+      <h2>Create clip</h2>
+      <form id="clip-form">
+        <div class="clip-row">
+          <div class="field">
+            <label for="start">Start <span class="muted">(sec or m:ss)</span></label>
+            <input id="start" name="start" type="text" value="0" inputmode="decimal" />
+          </div>
+          <div class="field">
+            <label for="end">End <span class="muted">(sec or m:ss)</span></label>
+            <input id="end" name="end" type="text" value="30" inputmode="decimal" />
+          </div>
+          <div class="field">
+            <label for="style">Clip style</label>
+            <select id="style" name="style"></select>
+          </div>
+          <div class="field submit-field">
+            <button type="submit" id="submit-btn" class="btn primary">Create clip</button>
+          </div>
+        </div>
+        <div id="style-params" class="style-params"></div>
+        <div id="cache-note" class="cache-note hidden"></div>
+        <div id="limits" class="hint"></div>
+      </form>
+    </section>
+
+    <!-- ============ job status / result ============ -->
+    <section id="status-section" class="card hidden">
+      <h2>Job status</h2>
+      <div id="status-line" class="status-line"></div>
+      <div id="error-box" class="error hidden"></div>
+      <div id="result" class="hidden">
+        <div class="result-grid">
+          <div class="phone-frame result"><video id="preview" controls preload="metadata" playsinline></video></div>
+          <div class="result-side">
+            <div class="result-meta" id="result-meta"></div>
+            <div id="result-dims" class="mono result-dims"></div>
+            <a id="download-btn" class="btn primary" download>Download clip</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ history ============ -->
+    <section class="card">
+      <h2>History <button id="refresh-history" class="link-btn" type="button">refresh</button></h2>
+      <div id="history-empty" class="empty hidden">No clips yet.</div>
+      <div class="table-wrap">
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>Created</th>
+              <th>Video</th>
+              <th>Range</th>
+              <th>Style</th>
+              <th>Status</th>
+              <th>Clip</th>
+            </tr>
+          </thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+      <div class="hint" id="history-meta"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Clips are kept on the server for a limited retention window (default 24 h); the history
+    record remains after the file is deleted. Personal-use tool — please respect the notice above.</p>
+  </footer>
+</body>
+</html>
