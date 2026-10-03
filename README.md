@@ -29,6 +29,12 @@ backend/            FastAPI application (Phase 1)
   alembic/          migrations (0001 = jobs, 0002 = previews + jobs.preview_id)
   tests/            148 offline tests (providers mocked/synthetic)
 frontend/           Plain HTML/JS editor UI served by the backend (Phases 2–3)
+  js/               browser engine: yt-resolver + client-engine + ffmpeg worker
+  vendor/ffmpeg/    @ffmpeg/core (wasm) — powers in-browser clipping
+proxy/              CORS pass-through for the browser engine
+  worker.js         Cloudflare Worker (production)
+  dev-server.mjs    Node dev mirror (sandbox/local)
+  DEPLOY.md         2-minute deploy guide + extension bridge contract
 docs/               feasibility report, phase reports, OpenAPI, AI guide
 Dockerfile          production image (ffmpeg + fonts + Python deps)
 render.yaml         Render blueprint (free plan)
@@ -211,6 +217,31 @@ module and its registry entry changes (spec §5).
 frequently, and can break without notice — the `cobalt` provider is expected
 to need maintenance over time. Failures always surface as a clear `failed`
 job status with the provider's own message.
+
+## The browser engine — client-side downloads + clipping
+
+YouTube aggressively bot-checks datacenter IPs, so the server-side download
+path (yt-dlp / cobalt) only works reliably from residential IPs or with
+login cookies. The **browser engine** removes the server from the equation
+entirely — the header chip toggles `engine: browser` / `engine: server`:
+
+1. **Resolve** — the page calls YouTube's innertube `player` API itself
+   (TV/Android/iOS client contexts, same ones yt-dlp uses) through a
+   transport: the companion Chrome extension (user's own IP) or a tiny
+   Cloudflare Worker CORS pipe (`proxy/worker.js`, deploy in ~2 minutes —
+   see `proxy/DEPLOY.md`; set `window.CLIPPER_YT_PROXY` in
+   `frontend/index.html` afterwards).
+2. **Play instantly** — the `<video>` element streams the resolved URL
+   (Range-supported) while the full file downloads.
+3. **Cache to OPFS** — 8 MB ranged chunks into the browser's Origin Private
+   File System: disk, not RAM, so 300–400 MB sources stay safe.
+4. **Clip locally** — `ffmpeg.wasm` (vendored in `frontend/vendor/ffmpeg/`)
+   cuts and reframes to 9:16 with the blurred backdrop, inside a Web Worker;
+   the result is a local blob download. No server round-trip at all.
+
+Verified end-to-end in a headless browser (OPFS cache → 60-thumbnail
+filmstrip → wasm 9:16 render → blob download, twice, zero console errors).
+Direct media URLs (any `https://…​.mp4`) also work — handy for testing.
 
 ## The timeline editor (Phase 3) — instant load (Phase 3.5)
 

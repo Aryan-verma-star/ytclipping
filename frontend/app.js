@@ -102,7 +102,48 @@ var state = {
   previewToken: 0,
   reelsRunning: false,
   rafId: 0,
+  /* browser-engine state (engine === "browser") */
+  engine: "server", // "browser" | "server" — toggled via the header chip
+  client: null, // { info, file, url } while a client-engine source is loaded
+  clientCacheQueue: Promise.resolve(), // serializes OPFS downloads
 };
+
+/* --------------------------- browser engine ------------------------------ */
+
+/* The browser engine is usable when the client engine loaded AND one of its
+ * transports is actually reachable: the companion extension, an explicitly
+ * configured Cloudflare Worker proxy, or the sandbox dev proxy. */
+function clientEngineUsable() {
+  if (!window.ClientEngine || !window.YTResolver) return false;
+  if (window.__YTCP__ && window.__YTCP__.version === 1) return true;
+  if (String(window.CLIPPER_YT_PROXY || "").trim()) return true;
+  if (GATEWAY_PORT) return true; // sandbox preview + node proxy/dev-server.mjs
+  return false;
+}
+
+function updateEngineChip() {
+  var chip = $("engine-chip");
+  if (!chip) return;
+  var usable = clientEngineUsable();
+  var browser = state.engine === "browser";
+  chip.textContent = "engine: " + (browser ? "browser" : "server");
+  chip.classList.toggle("active", browser);
+  chip.title = browser
+    ? "Browser engine active: downloads + ffmpeg.wasm clipping run on YOUR device — no server IP can be banned. Click to switch back to the server engine."
+    : usable
+      ? "Server engine active. Click to switch to the browser engine (downloads and clipping run on your device)."
+      : "Server engine active. The browser engine needs the companion extension or a configured proxy (see proxy/DEPLOY.md).";
+}
+
+function clientClipName() {
+  var base = (state.client && state.client.info && state.client.info.title || "clip")
+    .replace(/\.(mp4|webm|mov|m4v|mkv)$/i, "") // drop a file-type suffix
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 48);
+  return (base || "clip") + "-9x16.mp4";
+}
 
 /* ----------------------------- preview load ----------------------------- */
 
@@ -123,6 +164,10 @@ function clearLoadStatus() {
 function loadPreview(url) {
   url = (url || "").trim();
   if (!url) return;
+  if (state.engine === "browser" && clientEngineUsable()) {
+    clientLoad(url);
+    return;
+  }
   var token = ++state.previewToken;
   if (state.previewTimer) {
     clearTimeout(state.previewTimer);
@@ -242,6 +287,165 @@ function manualHintText() {
     " · max source " + state.meta.limits.max_source_timecode +
     " · files kept " + state.meta.retention_hours + " h"
   );
+}
+
+/* ------------------------ browser engine: load flow ----------------------- */
+
+/* Client-engine variant of loadPreview: resolve the stream in the browser
+ * (innertube via the transport), light the editor up immediately with the
+ * playable URL, then cache the source to OPFS and draw the filmstrip from
+ * the local file. */
+function clientLoad(url) {
+  var token = ++state.previewToken;
+  if (state.previewTimer) {
+    clearTimeout(state.previewTimer);
+    state.previewTimer = null;
+  }
+  $("load-btn").disabled = true;
+  setLoadStatus("busy", "Resolving in your browser…");
+  state.client = { info: null, file: null, url: url };
+
+  window.ClientEngine.resolve(url)
+    .then(function (info) {
+      if (token !== state.previewToken) return;
+      state.client.info = info;
+      clientApplyInfo(info);
+      clientCache(info, token);
+    })
+    .catch(function (err) {
+      if (token !== state.previewToken) return;
+      state.client = null;
+      $("load-btn").disabled = false;
+      var hint = err && err.exhausted
+        ? " — switch the engine to server, or try the companion extension."
+        : "";
+      setLoadStatus("error", err.message + hint);
+    });
+}
+
+/* Client-engine variant of applyPreview. */
+function clientApplyInfo(info) {
+  state.preview = null; // server preview path is off in browser mode
+  state.urlAtPreviewLoad = $("url").value.trim();
+  clearLoadStatus();
+  $("load-btn").disabled = false;
+
+  var editor = $("editor");
+  editor.classList.remove("hidden");
+
+  $("video-title").textContent = info.title || "Source video";
+  var bits = [];
+  if (info.duration) bits.push(fmtShort(info.duration));
+  if (info.height) bits.push(info.height + "p");
+  bits.push("via browser · " + info.transport + (info.resolvedWith ? " (" + info.resolvedWith + ")" : ""));
+  $("video-sub").textContent = bits.join(" · ");
+
+  buildTimeline({ duration: info.duration || 0, thumbs: [] });
+  if (state.timeline) state.timeline.setProgress(0);
+
+  var video = $("player");
+  state.playerPreviewId = "client:" + (info.videoId || info.directUrl);
+  video.src = info.playbackUrl;
+  video.classList.remove("dimmed");
+  $("player-preparing").classList.add("hidden");
+
+  // direct files may not know their duration until the player decodes it
+  if (!state.timeline) {
+    var onMeta = function () {
+      video.removeEventListener("loadedmetadata", onMeta);
+      if (
+        state.client &&
+        state.client.info === info &&
+        !state.timeline &&
+        video.duration &&
+        isFinite(video.duration)
+      ) {
+        buildTimeline({ duration: video.duration, thumbs: [] });
+        state.timeline.setSelection(0, Math.min(15, video.duration));
+        onSelectionChange(state.timeline.selStart, state.timeline.selEnd);
+        state.timeline.setProgress(0);
+      }
+    };
+    video.addEventListener("loadedmetadata", onMeta);
+    if (video.readyState >= 1) onMeta();
+  }
+
+  startReelsPreview();
+  updateTransport();
+  setCachePill("busy", "Caching in your browser…");
+  updateClientCacheNote();
+  editor.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* Cache to OPFS (serialized — the engine writes one fixed file name) and
+ * generate the filmstrip from the local copy. Progress goes to the pill +
+ * timeline fill, exactly like the server flow. */
+function clientCache(info, token) {
+  updateClientCacheNote();
+  var run = function () {
+    return window.ClientEngine.cacheSource(info, {
+      onProgress: function (ratio, done) {
+        if (token !== state.previewToken) return;
+        var label = ratio == null ? fmtBytes(done) : Math.round(ratio * 100) + "%";
+        setCachePill("busy", "Caching in your browser · " + label);
+        if (state.timeline) {
+          state.timeline.setProgress(ratio == null ? null : Math.min(0.999, ratio));
+        }
+        updateClientCacheNote(label);
+      },
+    });
+  };
+
+  state.clientCacheQueue = state.clientCacheQueue.then(run, run).then(
+    function (res) {
+      if (token !== state.previewToken) return;
+      state.client.file = res.file;
+      setCachePill("done", "Cached locally · " + fmtBytes(res.size));
+      if (state.timeline) {
+        state.timeline.setProgress(1);
+        state.timeline.clearProgress();
+      }
+      updateClientCacheNote();
+      window.ClientEngine.warmUp(); // preload ffmpeg.wasm while the user picks a range
+
+      var duration = info.duration || (state.timeline ? state.timeline.duration : 0);
+      if (!duration || duration < 1) return;
+      setCachePill("busy", "Generating thumbnails…");
+      return window.ClientEngine.generateThumbs(res.file, duration, 60).then(
+        function (thumbs) {
+          if (token !== state.previewToken) return;
+          if (state.timeline && thumbs && thumbs.length) {
+            state.timeline.setThumbs(thumbs);
+          }
+          setCachePill("done", "Cached locally · " + fmtBytes(res.size));
+        }
+      );
+    },
+    function (err) {
+      if (token !== state.previewToken) return;
+      setCachePill("error", "Local cache failed");
+      showError("Browser download failed: " + err.message);
+      updateClientCacheNote();
+    }
+  );
+}
+
+function updateClientCacheNote(pct) {
+  var note = $("cache-note");
+  if (state.client && state.client.info && !state.client.file) {
+    note.textContent =
+      "Browser engine: the source is downloading to your device (OPFS) — " +
+      "the clip is cut locally with ffmpeg.wasm the moment it finishes" +
+      (pct != null ? " (" + pct + ")" : "") + ".";
+    note.classList.remove("hidden");
+  } else if (state.client && state.client.file) {
+    note.textContent =
+      "Browser engine: source cached locally (" + fmtBytes(state.client.file.size) +
+      ") — clipping runs entirely on your device; nothing touches the server.";
+    note.classList.remove("hidden");
+  } else {
+    note.classList.add("hidden");
+  }
 }
 
 /* ------------------------------ editor setup ----------------------------- */
@@ -612,6 +816,16 @@ function collectStyleParams() {
 function submitJob(event) {
   event.preventDefault();
   hideError();
+  if (state.engine === "browser" && state.client && state.client.info) {
+    if (!state.client.file) {
+      showError(
+        "The source is still downloading to your browser — the local clip starts once the cache finishes."
+      );
+      return;
+    }
+    clientSubmitJob();
+    return;
+  }
   var btn = $("submit-btn");
   btn.disabled = true;
   btn.textContent = "Creating…";
@@ -645,6 +859,93 @@ function submitJob(event) {
       $("result").classList.add("hidden");
       showError(err.message);
     });
+}
+
+/* ------------------------- browser engine: clipping ----------------------- */
+
+/* Client-engine variant of submitJob/poll/renderResult: the 9:16 cut runs
+ * in ffmpeg.wasm inside a Web Worker and the result is a local blob —
+ * no server round-trip, no job record. */
+function clientSubmitJob() {
+  var btn = $("submit-btn");
+  btn.disabled = true;
+  btn.textContent = "Clipping…";
+
+  $("status-section").classList.remove("hidden");
+  $("result").classList.add("hidden");
+  $("status-section").scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  var start = parseFloat($("start").value) || 0;
+  var end = parseFloat($("end").value) || start + 15;
+  var params = collectStyleParams();
+  var logs = []; // tail of the ffmpeg log — surfaced on failure
+
+  var line = $("status-line");
+  line.innerHTML = "";
+  line.appendChild(el("span", "badge clipping", "clipping"));
+  var text = el("span", "status-text", " Cutting to 9:16 on your device (ffmpeg.wasm)…");
+  line.appendChild(text);
+  line.appendChild(
+    el("span", "muted", " " + (state.client.info.title || "") + " · local render")
+  );
+
+  window.ClientEngine.clip({
+    file: state.client.file,
+    start: start,
+    end: end,
+    background: params.background === "black" ? "black" : "blur",
+    resolution: Number(params.resolution) === 1080 ? 1080 : 720,
+    onProgress: function (r) {
+      if (r != null) {
+        text.textContent = " Cutting to 9:16 on your device… " + Math.round(r * 100) + "%";
+      }
+    },
+    onLog: function (t) {
+      logs.push(String(t));
+      if (logs.length > 60) logs.shift();
+    },
+  }).then(
+    function (out) {
+      btn.disabled = false;
+      btn.textContent = "Create clip";
+      var video = $("preview");
+      video.src = out.url;
+      $("result").classList.remove("hidden");
+      $("result-meta").textContent =
+        (state.client.info.title || "clip") + " · " + fmtShort(start) + "–" + fmtShort(end) +
+        " · " + out.duration.toFixed(1) + "s · " + fmtBytes(out.size) +
+        " · rendered in your browser";
+      var dims = $("result-dims");
+      dims.textContent = "checking dimensions…";
+      video.addEventListener(
+        "loadedmetadata",
+        function onMeta() {
+          video.removeEventListener("loadedmetadata", onMeta);
+          var ratio = video.videoWidth && video.videoHeight
+            ? (video.videoHeight / video.videoWidth).toFixed(2)
+            : "?";
+          dims.textContent =
+            video.videoWidth + "×" + video.videoHeight + " · aspect " + ratio + " (9:16 = 1.78)";
+        }
+      );
+      var dl = $("download-btn");
+      dl.href = out.url;
+      dl.setAttribute("download", clientClipName());
+    },
+    function (err) {
+      btn.disabled = false;
+      btn.textContent = "Create clip";
+      var tail = logs
+        .filter(function (l) {
+          return /\[error\]|error|invalid|no such|failed|unknown/i.test(l);
+        })
+        .slice(-8);
+      showError(
+        "Browser clip failed: " + err.message +
+        (tail.length ? " · ffmpeg: " + tail.join(" · ") : "")
+      );
+    }
+  );
 }
 
 function poll(jobId) {
@@ -817,6 +1118,7 @@ function resetEditor() {
   state.previewToken++;
   if (state.previewTimer) clearTimeout(state.previewTimer);
   state.preview = null;
+  state.client = null;
   state.urlAtPreviewLoad = "";
   state.playerPreviewId = "";
   if (state.timeline) {
@@ -833,6 +1135,7 @@ function resetEditor() {
   $("cache-pill").classList.add("hidden");
   $("cache-note").classList.add("hidden");
   $("editor").classList.add("hidden");
+  updateClientCacheNote();
   $("url").focus();
 }
 
@@ -867,6 +1170,31 @@ function bindEvents() {
   });
 
   $("change-video-btn").addEventListener("click", resetEditor);
+
+  // browser-engine toggle (header chip)
+  var engineChip = $("engine-chip");
+  if (engineChip) {
+    engineChip.addEventListener("click", function () {
+      var target = state.engine === "browser" ? "server" : "browser";
+      if (target === "browser" && !clientEngineUsable()) {
+        setLoadStatus(
+          "error",
+          "Browser engine unavailable — install the companion extension or configure window.CLIPPER_YT_PROXY (see proxy/DEPLOY.md)."
+        );
+        return;
+      }
+      state.engine = target;
+      try {
+        localStorage.setItem("ytcc-engine", target);
+      } catch (e) {
+        /* private mode — fine, next boot defaults again */
+      }
+      updateEngineChip();
+      resetEditor();
+      var value = $("url").value.trim();
+      if (value) loadPreview(value);
+    });
+  }
 
   // timeline tools
   $("set-in-btn").addEventListener("click", function () {
@@ -953,7 +1281,22 @@ function bindEvents() {
 
 state.lastAutoLoad = "";
 
+/* Engine boot: default to the browser engine when one of its transports is
+ * reachable, then honor the persisted user choice (downgrading a stale
+ * "browser" choice when no transport is available anymore). */
+state.engine = clientEngineUsable() ? "browser" : "server";
+try {
+  var savedEngine = localStorage.getItem("ytcc-engine");
+  if (savedEngine === "browser" || savedEngine === "server") {
+    state.engine = savedEngine;
+  }
+} catch (e) {
+  /* private mode */
+}
+if (state.engine === "browser" && !clientEngineUsable()) state.engine = "server";
+
 bindEvents();
+updateEngineChip();
 loadStyles().catch(function (err) {
   showError("Could not load styles: " + err.message);
 });

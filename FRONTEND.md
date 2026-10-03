@@ -190,6 +190,41 @@ styles/params appear on the backend with zero frontend changes.
 
 ---
 
+## 5b. The browser engine (client-side mode)
+
+The frontend ships a second, fully client-side engine — toggle it with the
+**`engine: browser` / `engine: server` chip** in the header (persisted in
+`localStorage.ytcc-engine`; defaults to browser when a transport is
+reachable). It exists because YouTube bot-checks datacenter IPs, which makes
+the server-side download path unreliable on free hosting.
+
+**Flow** (all on the user's device): `frontend/js/yt-resolver.js` calls the
+innertube `player` API (TVHTML5 / ANDROID / IOS / TVHTML5_SIMPLY contexts,
+pre-signed URLs, same client list yt-dlp uses) through a transport →
+`frontend/js/client-engine.js` plays the stream immediately, downloads it in
+8 MB ranged chunks into **OPFS** (`ytcc-source.mp4`), draws the 60-thumbnail
+filmstrip from the local file, then `frontend/js/ffmpeg-client.js` runs the
+vendored **@ffmpeg/core wasm** (`frontend/vendor/ffmpeg/`) in a module Web
+Worker to cut + reframe to 9:16 (blur or black backdrop, 720×1280 default,
+1080×1920 optional). The result is a blob: previewed in `#preview` and
+downloaded via a `download`-attributed object URL. No server job is created
+(client clips don't appear in History).
+
+**Transports** (checked in this order):
+1. `window.__YTCP__` — companion Chrome extension bridge (user's own IP;
+   contract in `proxy/DEPLOY.md`; extension not yet in this repo).
+2. `window.CLIPPER_YT_PROXY` — Cloudflare Worker CORS pipe (set it in
+   `frontend/index.html` head; deploy guide: `proxy/DEPLOY.md`).
+3. Sandbox dev proxy — automatic when the page runs behind
+   `?XTransformPort=` (start with `node proxy/dev-server.mjs`, port 8020).
+
+**Caps**: 400 MB source, muxed (video+audio) itags only — the resolver
+skips ciphered WEB-client URLs. `background` style param maps to the same
+blur/black choices as the server's "Original" style. Verified end-to-end in
+a headless browser (OPFS → filmstrip → wasm 9:16 render → blob, twice,
+zero console errors) using a direct media URL; YouTube resolution needs a
+non-bot-flagged transport (extension or CF worker).
+
 ## 6. The current frontend, file by file
 
 ### 6.1 `index.html` (~230 lines)
@@ -337,10 +372,13 @@ forwarding for cross-origin video seeking, exposed `Content-Range` headers.
 Current limitations (by design, v1):
 - "Original" style only (9:16 centered + blur/black backdrop).
 - 10-minute max clip, 4-hour max source (server-enforced; surfaced via
-  `/api/meta`).
+  `/api/meta`). The browser engine caps sources at 400 MB (wasm heap).
 - No auth — rate limiting is the only abuse protection (personal use).
 - AI suggestion endpoint is a stub (`POST /api/ai/suggest` → 503 unless
   enabled); plan in `docs/ai-integration.md`.
+- Browser engine: one OPFS cache file (downloads serialize), no resume
+  after a tab reload; the Chrome extension transport is spec'd but not
+  built yet.
 
 Ideas (roughly in value order):
 1. Mobile UX polish (timeline gestures are desktop-first right now).

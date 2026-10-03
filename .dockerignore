@@ -10,5 +10,6 @@ backend/data
 *.pyc
 docs
 scripts
+proxy
 *.md
 !README.md

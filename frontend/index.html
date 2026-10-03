@@ -14,6 +14,17 @@
     window.CLIPPER_API_BASE = "";
   </script>
   <script>
+    /* Browser engine (client-side downloads + ffmpeg.wasm clipping — no
+       server IP involved): set this to your Cloudflare Worker proxy URL,
+       no trailing slash, e.g.
+           window.CLIPPER_YT_PROXY = "https://yt-proxy.your-name.workers.dev";
+       Deploy the worker once in ~2 minutes with the steps in proxy/DEPLOY.md
+       (free tier). Leave EMPTY to use only the server engine. The companion
+       Chrome extension (see proxy/DEPLOY.md) enables the browser engine
+       without any proxy at all. */
+    window.CLIPPER_YT_PROXY = "";
+  </script>
+  <script>
     /* Sandbox-gateway bootstrap: when this page is served through the build
        sandbox's Caddy gateway (URL contains ?XTransformPort=PORT), asset
        URLs must repeat that query parameter or the gateway routes them to
@@ -24,6 +35,8 @@
       var q = port ? "?XTransformPort=" + encodeURIComponent(port) : "";
       document.write('<link rel="stylesheet" href="styles.css' + q + '">');
       document.write('<script defer src="timeline.js' + q + '"><\/script>');
+      document.write('<script defer src="js/yt-resolver.js' + q + '"><\/script>');
+      document.write('<script defer src="js/client-engine.js' + q + '"><\/script>');
       document.write('<script defer src="app.js' + q + '"><\/script>');
     })();
   </script>
@@ -40,6 +53,7 @@
       <span class="brand-chip">9:16 · Reels &amp; Shorts</span>
     </div>
     <div class="topbar-right">
+      <button id="engine-chip" class="chip-btn" type="button" title="Switch download/clip engine">engine: server</button>
       <span id="provider-chip" class="chip hidden"></span>
     </div>
   </header>

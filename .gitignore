@@ -1,6 +1,6 @@
 # ============================================================================
 # YouTube Clipper — .gitignore
-# The GitHub repo should contain ONLY: backend/, frontend/, docs/, scripts/,
+# The GitHub repo should contain ONLY: backend/, frontend/, proxy/, docs/, scripts/,
 # Dockerfile, render.yaml, README.md, .env.example.
 # Everything else below is local test output, secrets, or build-sandbox
 # scaffolding that the deployed app does not use.
