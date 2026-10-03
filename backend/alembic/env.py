@@ -13,6 +13,7 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.db.models import Base  # noqa: E402
+from app.config import normalize_database_url  # noqa: E402
 
 config = context.config
 
@@ -28,15 +29,13 @@ target_metadata = Base.metadata
 def _database_url() -> str:
     url = (config.get_main_option("sqlalchemy.url") or "").strip()
     if url:
-        return url
+        return normalize_database_url(url)
     # Prefer the namespaced variable; accept the generic one only if it looks
     # like a SQLAlchemy URL (skips e.g. Prisma's `file:./dev.db`).
     for env_var in ("CLIPPER_DATABASE_URL", "DATABASE_URL"):
         env_url = os.environ.get(env_var, "").strip()
         if env_url.startswith(("sqlite://", "postgresql://", "postgres://")):
-            if env_url.startswith("postgres://"):
-                env_url = "postgresql://" + env_url[len("postgres://"):]
-            return env_url
+            return normalize_database_url(env_url)
     # dev fallback mirrors app.config.Settings default (backend/data/clips.db)
     return "sqlite:///" + os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "data", "clips.db")

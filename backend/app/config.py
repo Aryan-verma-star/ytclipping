@@ -15,6 +15,28 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]  # .../backend
 REPO_ROOT = BACKEND_DIR.parent  # repository root
 
 
+def normalize_database_url(url: str) -> str:
+    """Normalize a user-supplied database URL to what this app can run on.
+
+    - ``postgres://`` (legacy Heroku style) → ``postgresql://``
+    - ``postgresql://`` → ``postgresql+psycopg2://`` — SQLAlchemy 2.1 made
+      psycopg (v3) the *default* dialect for bare ``postgresql://`` URLs,
+      but this app ships ``psycopg2-binary``; without the explicit driver
+      the engine dies at import with ``ModuleNotFoundError: psycopg``
+      (caught live against a real Neon database on 2026-10-03, before it
+      could hit production). psycopg2 is also the safer client behind
+      Neon's PgBouncer transaction-mode pooler (no prepared statements).
+    - anything else (including explicit ``postgresql+<driver>://``) is
+      returned untouched for the caller to validate.
+    """
+    url = (url or "").strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url
+
+
 class Settings(BaseSettings):
     """All environment variables are namespaced with CLIPPER_ to avoid
     collisions in shared environments (e.g. a platform-injected DATABASE_URL
@@ -125,11 +147,12 @@ class Settings(BaseSettings):
         url = (self.database_url or "").strip()
         if not url:
             return f"sqlite:///{(self.resolved_data_dir / 'clips.db').as_posix()}"
-        # Accept the legacy Heroku-style scheme; reject anything unparseable
-        # early with a clear message instead of a cryptic SQLAlchemy error.
-        if url.startswith("postgres://"):
-            url = "postgresql://" + url[len("postgres://"):]
-        if not (url.startswith("sqlite://") or url.startswith("postgresql://")):
+        # Accept the legacy Heroku-style scheme; pin the psycopg2 driver
+        # (SQLAlchemy 2.1 defaults bare postgresql:// to psycopg v3, which we
+        # do not ship); reject anything unparseable early with a clear
+        # message instead of a cryptic SQLAlchemy error.
+        url = normalize_database_url(url)
+        if not (url.startswith("sqlite://") or url.startswith("postgresql")):
             raise ValueError(
                 f"CLIPPER_DATABASE_URL must start with sqlite:// or postgresql:// "
                 f"(got {url[:60]!r}). Note: this app does NOT read the generic "
