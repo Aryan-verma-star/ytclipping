@@ -49,38 +49,35 @@ No code changes needed for either path. The app is already Dockerized.
 
 | Service   | Purpose                        | Free tier                                | Card? |
 |-----------|--------------------------------|------------------------------------------|-------|
-| GitHub    | hosts the code (deploys from it) | unlimited private repos                 | No   |
+| Bitbucket | hosts the code (deploys from it) | unlimited private repos                 | No   |
 | Render    | runs the backend + frontend    | 750 instance-hours/month (≈ always-on for 1 service) | No |
 | Neon       | Postgres database (metadata)   | ~0.5 GB storage, never expires           | No   |
 | Vercel *(optional)* | static frontend on a nicer URL | Hobby plan | No |
 
-> Sign-up tip: use **Sign in with GitHub** on Render and Neon — one identity,
-> and it makes repo access + deploys smoother.
+> Sign-up tip: sign in to Render **with Bitbucket** — it connects your repo
+> in one click. Neon has its own login (Google / GitHub / e-mail all work).
 
 ---
 
-## 2. Push the code to GitHub
+## 2. The code on Bitbucket
 
-Render builds from a Git repo, so the code needs to be on GitHub first.
+Render builds from a Git repo, so the code lives on Bitbucket:
 
-**If you use the GitHub website (easiest, no Git installed):**
+**https://bitbucket.org/ytclipper/ytcliiper-backend** — already pushed
+(branch `main`).
 
-1. github.com → **New repository** → name it `youtube-clipper` → choose
-   **Private** → Create. (Private is right even though it's free — see the
-   cookies note in §6.)
-2. On the repo page click **uploading an existing file**, drag the entire
-   project folder's contents in, then **Commit changes**.
-
-**If you use Git on the command line:**
+**If you ever need to re-push it yourself** (e.g. from the
+`ytclipper-render-deploy.zip` backup): first create an **App password** —
+Bitbucket → avatar → **Personal Bitbucket settings** → **App passwords** →
+check **Repositories: Read and Write** — then:
 
 ```bash
-cd youtube-clipper            # the project folder (with backend/, frontend/, Dockerfile)
-git init
+cd ytclipper-backend          # the project folder (with backend/, frontend/, Dockerfile)
+git init -b main
 git add .
 git commit -m "YouTube Clipper — ready to deploy"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/youtube-clipper.git
-git push -u origin main
+git remote add origin https://bitbucket.org/ytclipper/ytcliiper-backend.git
+git push -u origin main       # asks for your Bitbucket username + the app password
 ```
 
 The included `.gitignore` already keeps the repo clean and safe — it excludes:
@@ -101,7 +98,7 @@ Dockerfile      render.yaml     README.md       .env.example    .gitignore
 
 ## 3. Create the Neon database (≈ 5 minutes)
 
-1. Go to **neon.tech** → **Sign Up** (GitHub login works).
+1. Go to **neon.tech** → **Sign Up** (Google or GitHub login works).
 2. **Create project** → name: `youtube-clipper` → Region: **Singapore**
    (closest to India; any region works) → Create.
 3. The project dashboard shows a **Connection string**. Click copy. It looks
@@ -126,11 +123,13 @@ never notice. It never expires and needs no card.
 
 ### 4.1 Create the service from the blueprint
 
-1. Go to **render.com** → **Get Started** / **Sign In** with GitHub.
-2. Grant Render access to your repos when asked (you can limit it to
-   `youtube-clipper`).
+1. Go to **render.com** → **Get Started** / **Sign In** — choose **Bitbucket**
+   so your repo connects in one step (or sign up with e-mail, then connect
+   Bitbucket from User Settings → Connected accounts).
+2. Grant Render access when asked (you can limit it to the
+   `ytclipper/ytcliiper-backend` repo).
 3. Dashboard → **New +** → **Blueprint**.
-4. Select your `youtube-clipper` repo → Render reads `render.yaml`
+4. Select the `ytclipper/ytcliiper-backend` repo → Render reads `render.yaml`
    (already in the repo — it defines the service, region, health check and
    every environment variable).
 5. Render prompts for the values marked `sync: false`. Fill in:
@@ -190,7 +189,7 @@ Both pieces are still free; they're just deployed separately:
    ```
    Commit + push.
 2. **Deploy the frontend on Vercel.** vercel.com → **Add New… → Project** →
-   Import your `youtube-clipper` repo → set **Root Directory** to
+   Import the `ytcliiper-backend` repo → set **Root Directory** to
    `frontend` → Framework Preset: **Other** → **Deploy**.
    (Vercel serves the static files as-is; there is nothing to build.)
 3. **Allow that origin on the backend.** Render → your service →
