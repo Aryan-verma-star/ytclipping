@@ -85,7 +85,12 @@ class _TransientUpstream(Exception):
 
 
 _DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Clipper/1.6",
+    # The vidssave CDN 403s non-browser User-Agents (found live 2026-10-03),
+    # so every request — including the CDN download — identifies as a browser.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ),
     "Origin": "https://vidssave.com",
     "Referer": "https://vidssave.com/",
 }

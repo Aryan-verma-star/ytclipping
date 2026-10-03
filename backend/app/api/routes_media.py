@@ -7,6 +7,14 @@ cross-origin. This endpoint relays them: the backend (whose IP vidssave's
 CDN happily serves — no IP locking) streams the remote file through with
 Range passthrough, and the page fetches it same-origin.
 
+The CDN (down-XX.vidssave.com, paths like /tmp/recycle/1m/...) serves files
+that materialize lazily and recycle after use: a freshly issued link can
+403 for the first ~30-60 s before the file appears (verified live
+2026-10-03), and it also 403s non-browser User-Agents. The proxy therefore
+identifies as a browser and RETRIES transient upstream refusals with a
+backoff (mirroring the vidssave provider's proven download loop) instead of
+failing over to a 502 that the <video> element cannot recover from.
+
 Strictly allowlisted to vidssave hosts to avoid becoming an open proxy
 (SSRF). Media streaming is exempt from the per-IP rate limiter (see
 _MEDIA_PATH_RE in app.main) because <video> elements legitimately issue
@@ -14,6 +22,8 @@ many Range requests.
 """
 
 from __future__ import annotations
+
+import time
 
 import httpx
 from fastapi import APIRouter, Request
@@ -71,6 +81,12 @@ def urlsplit_host(url: str) -> str:
 # Headers relayed from the upstream response to the browser.
 _PASSTHROUGH = ("content-type", "content-length", "content-range", "accept-ranges", "etag")
 
+# Upstream statuses that are plausibly transient (CDN file not yet
+# materialized, momentary WAF refusal) and retried with a backoff.
+_RETRYABLE = {403, 408, 425, 429, 500, 502, 503, 504}
+# ~62 s of total backoff — covers the observed ~30-60 s materialization window.
+_RETRY_DELAYS = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+
 
 @router.get("/media/proxy")
 def media_proxy(request: Request, url: str):
@@ -85,37 +101,66 @@ def media_proxy(request: Request, url: str):
             },
         )
 
-    upstream_headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Clipper/1.6"}
+    # The vidssave CDN (down-XX.vidssave.com) 403s non-browser User-Agents
+    # (found live 2026-10-03: "Clipper/1.6" -> 403, browser UA -> 200), so the
+    # relay identifies as a normal browser for the upstream hop.
+    upstream_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+        )
+    }
     range_header = request.headers.get("range")
     if range_header:
         upstream_headers["Range"] = range_header
 
     timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=15.0)
     client = httpx.Client(follow_redirects=True, timeout=timeout)
+    upstream = None
+    last_status = None
     try:
-        req = client.build_request("GET", url, headers=upstream_headers)
-        upstream = client.send(req, stream=True)
-    except httpx.HTTPError:
+        for delay in _RETRY_DELAYS:
+            if delay:
+                time.sleep(delay)
+            req = client.build_request("GET", url, headers=upstream_headers)
+            try:
+                candidate = client.send(req, stream=True)
+            except httpx.HTTPError:
+                client.close()
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": {
+                            "code": "upstream_unreachable",
+                            "message": "The media host could not be reached.",
+                        }
+                    },
+                )
+            if candidate.status_code < 400:
+                upstream = candidate
+                break
+            last_status = candidate.status_code
+            candidate.close()
+            if last_status not in _RETRYABLE:
+                break  # permanent refusal — report it right away
+            # transient (CDN still materializing the file) — back off, retry
+    except Exception:
         client.close()
-        return JSONResponse(
-            status_code=502,
-            content={
-                "error": {
-                    "code": "upstream_unreachable",
-                    "message": "The media host could not be reached.",
-                }
-            },
-        )
+        raise
 
-    if upstream.status_code >= 400:
-        upstream.close()
+    if upstream is None or upstream.status_code >= 400:
         client.close()
         return JSONResponse(
             status_code=502,
             content={
                 "error": {
                     "code": "upstream_error",
-                    "message": f"The media host responded with HTTP {upstream.status_code}.",
+                    "message": (
+                        f"The media host responded with HTTP {last_status} "
+                        "after several retries."
+                        if last_status in _RETRYABLE
+                        else f"The media host responded with HTTP {last_status}."
+                    ),
                 }
             },
         )

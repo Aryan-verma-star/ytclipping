@@ -424,9 +424,12 @@ function clientLoad(url) {
       if (token !== state.previewToken) return;
       state.client = null;
       $("load-btn").disabled = false;
-      var hint = err && err.exhausted
-        ? " — switch the engine to server, or try the companion extension."
-        : "";
+      var hint = "";
+      if (err && err.status_code === "analyze_risk") {
+        hint = " — upload the video file directly instead.";
+      } else if (err && err.exhausted) {
+        hint = " — switch the engine to server, or try the companion extension.";
+      }
       setLoadStatus("error", err.message + hint);
     });
 }
@@ -568,6 +571,14 @@ function clientCache(info, token) {
     function (res) {
       if (token !== state.previewToken) return;
       state.client.file = res.file;
+      /* The <video> element can give up on the proxy stream while vidssave's
+       * CDN is still materializing the file (slow first byte → ERR_ABORTED).
+       * If it never received any data, play the freshly cached local copy. */
+      var player = $("player");
+      if (player.readyState === 0 && state.client.info) {
+        player.src = URL.createObjectURL(res.file);
+        player.classList.remove("dimmed");
+      }
       setCachePill("done", "Cached locally · " + fmtBytes(res.size));
       if (state.timeline) {
         state.timeline.setProgress(1);

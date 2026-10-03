@@ -15,14 +15,29 @@
  * the whole point: vidssave's risk check flags datacenter IPs (analyze_risk)
  * but passes residential browsers, and its CDN never IP-locks the result.
  *
+ * CRITICAL (found live 2026-10-03): their risk engine ALSO flags any request
+ * carrying a FOREIGN Referer (their own site sends https://vidssave.com/).
+ * Every request here therefore omits the Referer — via the fetch option
+ * below AND the <meta name="referrer" content="no-referrer"> in index.html
+ * (the SSE EventSource cannot set a per-request policy).
+ *
  * Response `data` fields are AES-256-CBC encrypted (base64, ZeroPadding).
  * Keys/IVs are extracted from the site's JS bundle; decryption uses the
  * vendored aes-js (vendor/aes-js/aes.js). Mirror of their readResponse():
  * try plain JSON first, then decrypt.
  *
- * API host: production api.vidssave.com by default. Override for testing
- * with ?vsapi=dev (their staging endpoint, which tolerates datacenter IPs)
- * or window.CLIPPER_VIDSSAVE_API = "dev" | "prod".
+ * API hosts: production api.vidssave.com first, then their staging endpoint
+ * (test-api.vidssave.com) as an AUTOMATIC fallback. vidssave's risk check
+ * flags many otherwise-fine networks (analyze_risk) on the production API
+ * only, while the staging endpoint currently accepts them (verified live
+ * 2026-10-03 — it even serves datacenter IPs). When the production parse is
+ * refused, every call is retried once against staging; the host that
+ * succeeded is remembered for the rest of the tab session (sessionStorage
+ * "ytcc-vs-sticky") so the download task + SSE poll hit the same backend
+ * that issued the resource token.
+ *
+ * Force a specific host for testing with ?vsapi=dev|prod or
+ * window.CLIPPER_VIDSSAVE_API = "dev" | "prod" (this disables the fallback).
  *
  * Exposed as window.VidsSave.
  */
@@ -54,20 +69,53 @@
     "rz18efAXUbdiaO7k", // 16B fallback
   ];
 
-  function apiMode() {
+  var STICKY_KEY = "ytcc-vs-sticky";
+
+  /* Host that last succeeded (this tab). Survives reloads via sessionStorage
+   * so a network that is flagged on prod skips straight to staging next
+   * time instead of re-paying the failed round-trip. */
+  var sticky = (function () {
+    try {
+      var v = window.sessionStorage.getItem(STICKY_KEY);
+      return v === "dev" || v === "prod" ? v : "";
+    } catch (e) {
+      return ""; // sessionStorage unavailable — in-memory stickiness only
+    }
+  })();
+
+  function setSticky(mode) {
+    sticky = mode;
+    try {
+      window.sessionStorage.setItem(STICKY_KEY, mode);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function forcedMode() {
     var override = String(window.CLIPPER_VIDSSAVE_API || "").trim().toLowerCase();
     if (!override) {
       override = new URLSearchParams(window.location.search).get("vsapi") || "";
     }
-    return override === "dev" ? "dev" : "prod";
+    return override === "dev" || override === "prod" ? override : "";
+  }
+
+  function apiMode() {
+    return forcedMode() || sticky || "prod";
+  }
+
+  function hostsFor(mode) {
+    return mode === "dev"
+      ? { api: DEV_API, sse: DEV_SSE }
+      : { api: PROD_API, sse: PROD_SSE };
   }
 
   function apiUrl() {
-    return apiMode() === "dev" ? DEV_API : PROD_API;
+    return hostsFor(apiMode()).api;
   }
 
   function sseUrl() {
-    return apiMode() === "dev" ? DEV_SSE : PROD_SSE;
+    return hostsFor(apiMode()).sse;
   }
 
   /* ------------------------------- crypto -------------------------------- */
@@ -166,13 +214,14 @@
 
   /* ------------------------------- requests ------------------------------- */
 
-  function postForm(path, fields, signal) {
+  function postFormTo(hosts, path, fields, signal) {
     var body = Object.assign({}, FORM, fields || {});
-    return fetch(apiUrl() + path, {
+    return fetch(hosts.api + path, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(body).toString(),
       credentials: "omit",
+      referrerPolicy: "no-referrer", // their risk engine flags foreign Referers
       signal: signal || undefined,
     }).then(function (response) {
       return response.text().then(function (text) {
@@ -190,11 +239,76 @@
     });
   }
 
+  function postForm(path, fields, signal) {
+    return postFormTo(hostsFor(apiMode()), path, fields, signal);
+  }
+
   /* ------------------------------- parsing -------------------------------- */
 
   function qualityNumber(quality) {
     var m = String(quality || "").match(/(\d{3,4})\s*p/i);
     return m ? Number(m[1]) : 0;
+  }
+
+  function isRiskError(err) {
+    return !!(err && err.status_code === "analyze_risk");
+  }
+
+  /* Single media/parse against one host; throws Error with .status_code. */
+  function parseOnce(mode, url, signal) {
+    return postFormTo(
+      hostsFor(mode),
+      "/media/parse",
+      { origin: "source", link: url },
+      signal
+    ).then(function (envelope) {
+      if (envelope && envelope.status === 1 && envelope.data) return envelope;
+      var code = (envelope && envelope.status_code) || "";
+      var msg = (envelope && envelope.msg) || "analysis failed";
+      var err = new Error(
+        code === "analyze_risk"
+          ? "vidssave flagged this network (analyze_risk) — " +
+              "the resolver only accepts residential IPs."
+          : "vidssave could not analyze this URL (" + (code || msg) + ")."
+      );
+      err.status_code = code;
+      throw err;
+    });
+  }
+
+  function mapParse(envelope) {
+    var data = envelope.data;
+    var videos = [];
+    var audios = [];
+    (data.resources || []).forEach(function (r) {
+      if (!r || !r.resource_content) return;
+      var entry = {
+        resourceContent: r.resource_content,
+        quality: r.quality || "",
+        height: qualityNumber(r.quality),
+        size: r.size || null,
+        format: r.format || r.original_format || "MP4",
+        hasAudio: !!r.has_audio,
+        outputFormat: r.output_format || null,
+        directUrl: r.download_url && r.download_mode === "direct" ? r.download_url : null,
+      };
+      if (r.type === "video") videos.push(entry);
+      else if (r.type === "audio") audios.push(entry);
+    });
+    /* The download task always returns a muxed file (video+audio), so a
+     * video entry is usable regardless of its has_audio flag. */
+    videos.sort(function (a, b) {
+      return (b.height || 0) - (a.height || 0) || (b.size || 0) - (a.size || 0);
+    });
+    return {
+      title: data.title || "video",
+      duration: data.duration ? Number(data.duration) : null,
+      thumbnail: data.thumbnail || null,
+      author: (data.user_item && data.user_item.name) || "",
+      videos: videos,
+      audios: audios,
+      raw: data,
+    };
   }
 
   /**
@@ -204,76 +318,85 @@
    *   audios: [...], raw
    * }>
    * videos are sorted best-first (highest quality with a usable resource).
+   *
+   * Tries the current host (forced > sticky > prod) and, unless a host was
+   * forced with ?vsapi=/CLIPPER_VIDSSAVE_API, retries once against the
+   * other endpoint when the first refuses (analyze_risk or any parse
+   * failure). A successful fallback is remembered for the tab session.
    */
   function resolve(url, opts) {
     opts = opts || {};
-    return postForm(
-      "/media/parse",
-      { origin: "source", link: url },
-      opts.signal
-    ).then(function (envelope) {
-      if (!envelope || envelope.status !== 1 || !envelope.data) {
-        var code = (envelope && envelope.status_code) || "";
-        var msg = (envelope && envelope.msg) || "analysis failed";
-        var err = new Error(
-          code === "analyze_risk"
-            ? "vidssave flagged this network (analyze_risk) — " +
-                "the resolver only accepts residential IPs."
-            : "vidssave could not analyze this URL (" + (code || msg) + ")."
-        );
-        err.status_code = code;
-        throw err;
-      }
-      var data = envelope.data;
-      var videos = [];
-      var audios = [];
-      (data.resources || []).forEach(function (r) {
-        if (!r || !r.resource_content) return;
-        var entry = {
-          resourceContent: r.resource_content,
-          quality: r.quality || "",
-          height: qualityNumber(r.quality),
-          size: r.size || null,
-          format: r.format || r.original_format || "MP4",
-          hasAudio: !!r.has_audio,
-          outputFormat: r.output_format || null,
-          directUrl: r.download_url && r.download_mode === "direct" ? r.download_url : null,
-        };
-        if (r.type === "video") videos.push(entry);
-        else if (r.type === "audio") audios.push(entry);
-      });
-      /* The download task always returns a muxed file (video+audio), so a
-       * video entry is usable regardless of its has_audio flag. */
-      videos.sort(function (a, b) {
-        return (b.height || 0) - (a.height || 0) || (b.size || 0) - (a.size || 0);
-      });
-      return {
-        title: data.title || "video",
-        duration: data.duration ? Number(data.duration) : null,
-        thumbnail: data.thumbnail || null,
-        author: (data.user_item && data.user_item.name) || "",
-        videos: videos,
-        audios: audios,
-        raw: data,
-      };
+    var forced = forcedMode();
+    var first = apiMode();
+    var attempt = parseOnce(first, url, opts.signal);
+    if (forced) return attempt.then(mapParse);
+
+    var other = first === "prod" ? "dev" : "prod";
+    return attempt.then(mapParse).catch(function (err) {
+      /* The primary host refused — vidssave's staging endpoint accepts many
+       * networks the production API flags (analyze_risk); one retry there
+       * rescues those users without affecting anyone else. */
+      return parseOnce(other, url, opts.signal).then(
+        function (envelope) {
+          setSticky(other);
+          return mapParse(envelope);
+        },
+        function (err2) {
+          if (isRiskError(err) && isRiskError(err2)) {
+            var both = new Error(
+              "vidssave flagged this network (analyze_risk) on both of its " +
+                "endpoints — YouTube downloads won't work from this network " +
+                "right now."
+            );
+            both.status_code = "analyze_risk";
+            throw both;
+          }
+          throw err2;
+        }
+      );
     });
   }
 
   /**
    * createTask(resourceContent, {outputFormat, signal}) -> Promise<taskId>
+   * Runs against the current host (the one that issued the token); if it
+   * refuses, the other endpoint gets one try too (it owns the token when
+   * the parse fell back there).
    */
   function createTask(resourceContent, opts) {
     opts = opts || {};
     var fields = { request: resourceContent, no_encrypt: "1" };
     if (opts.outputFormat) fields.output = opts.outputFormat;
-    return postForm("/media/download", fields, opts.signal).then(function (envelope) {
-      if (!envelope || envelope.status !== 1 || !(envelope.data && envelope.data.task_id)) {
-        var code = (envelope && envelope.status_code) || "";
-        throw new Error(
-          "vidssave refused to prepare the download" + (code ? " (" + code + ")" : "") + "."
-        );
-      }
-      return envelope.data.task_id;
+
+    function attempt(mode) {
+      return postFormTo(hostsFor(mode), "/media/download", fields, opts.signal).then(
+        function (envelope) {
+          if (
+            envelope &&
+            envelope.status === 1 &&
+            envelope.data &&
+            envelope.data.task_id
+          ) {
+            return envelope.data.task_id;
+          }
+          var code = (envelope && envelope.status_code) || "";
+          throw new Error(
+            "vidssave refused to prepare the download" +
+              (code ? " (" + code + ")" : "") +
+              "."
+          );
+        }
+      );
+    }
+
+    var first = apiMode();
+    return attempt(first).catch(function (err) {
+      if (forcedMode()) throw err;
+      var other = first === "prod" ? "dev" : "prod";
+      return attempt(other).then(function (taskId) {
+        setSticky(other);
+        return taskId;
+      });
     });
   }
 

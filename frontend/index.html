@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- No-Referrer: vidssave's risk engine (analyze_risk) flags API calls
+       that carry a FOREIGN Referer (their own site sends vidssave.com).
+       Omitting the Referer entirely is a standard privacy setting and
+       passes their check — verified live 2026-10-03. Also covers the SSE
+       EventSource, which cannot set a per-request referrer policy. -->
+  <meta name="referrer" content="no-referrer" />
   <title>YouTube Clipper — Reels &amp; Shorts</title>
   <script>
     /* Cross-origin deployment (e.g. frontend on Vercel, backend on Render):

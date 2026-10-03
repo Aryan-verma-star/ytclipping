@@ -218,8 +218,18 @@ needed) offers the raw vidssave file once its URL exists.
 
 **Resolution paths** (checked in this order):
 1. `window.VidsSave` — the built-in vidssave resolver (ALWAYS available;
-   runs from the user's residential IP, which their risk check accepts —
-   zero setup, no proxy, no extension).
+   runs from the user's residential IP — zero setup, no proxy, no
+   extension). **Two live findings (2026-10-03) shape how it calls the
+   API**: vidssave's risk engine flags requests carrying a foreign
+   `Referer`, so the page sets `<meta name="referrer"
+   content="no-referrer">` (plus a per-fetch `referrerPolicy`) — without
+   it every browser gets `analyze_risk`. And when the production API
+   (`api.vidssave.com`) still refuses a network, the client automatically
+   retries once against their staging endpoint
+   (`test-api.vidssave.com`, CORS-open, currently tolerates even datacenter
+   IPs); the host that succeeds is remembered in `sessionStorage`
+   (`ytcc-vs-sticky`) so the task + SSE hit the same backend. Force a host
+   for testing with `?vsapi=dev|prod` (disables the fallback).
 2. `window.__YTCP__` — companion Chrome extension bridge (user's own IP;
    contract in `proxy/DEPLOY.md`; extension not yet in this repo).
 3. `window.CLIPPER_YT_PROXY` — Cloudflare Worker CORS pipe (set it in
@@ -227,17 +237,23 @@ needed) offers the raw vidssave file once its URL exists.
 4. Sandbox dev proxy — automatic when the page runs behind
    `?XTransformPort=` (start with `node proxy/dev-server.mjs`, port 8020).
 
-**Testing hook**: append `?vsapi=dev` to the page URL to point the vidssave
-client at their staging API (tolerates datacenter IPs — useful for sandbox
-e2e runs; production uses the real API).
+**Testing hook**: append `?vsapi=dev` to the page URL to pin the vidssave
+client to their staging API (tolerates datacenter IPs — useful for sandbox
+e2e runs).
 
 **Caps**: 400 MB source. `background` style param maps to the same
 blur/black choices as the server's "Original" style. Verified end-to-end in
 a headless browser (vidssave resolve → proxy relay → OPFS → filmstrip →
 wasm 9:16 render → blob, zero console errors); the vidssave protocol itself
 (parse/task/SSE/redirect/CDN + AES round-trip) was validated live with curl
-and Python. If vidssave flags a network (`analyze_risk`), the UI says so and
-falls back to the innertube transports when configured.
+and Python. If vidssave still flags a network on BOTH endpoints
+(`analyze_risk`), the UI says so and suggests uploading the file directly;
+innertube transports are the next fallback when configured. Note the vidssave
+CDN (`down-XX.vidssave.com`, `tmp/recycle/...` paths) serves lazily
+materialized files — a fresh link can 403 for the first ~30–60 s — so the
+backend `/api/media/proxy` retries transient upstream statuses with a
+backoff (~62 s budget) and identifies as a browser (their CDN 403s
+non-browser User-Agents).
 
 ## 6. The current frontend, file by file
 

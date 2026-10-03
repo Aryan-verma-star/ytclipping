@@ -237,15 +237,20 @@ entirely — the header chip toggles `engine: browser` / `engine: server`:
    (`frontend/js/vidssave-client.js`, reverse-engineered 2026-10-03):
    `media/parse` → `media/download` task → SSE `download_query` → a signed
    CDN mp4 (video+audio already muxed server-side). Their API sends
-   `Access-Control-Allow-Origin: *` and their risk check passes residential
-   browsers — which is exactly why this runs in the page, not on the server.
-   The `data` fields are AES-256-CBC encrypted; the page decrypts them with
-   the vendored `aes-js` (`frontend/vendor/aes-js/`).
-2. **Fallback transports** — if vidssave refuses a network, resolution falls
-   back to YouTube's innertube `player` API through the companion Chrome
-   extension (user's own IP) or a Cloudflare Worker CORS pipe
-   (`proxy/worker.js` — see `proxy/DEPLOY.md`, set `window.CLIPPER_YT_PROXY`
-   in `frontend/index.html`).
+   `Access-Control-Allow-Origin: *`. Two of their anti-bot rules were
+   reverse-engineered live and are handled: the risk engine flags requests
+   carrying a **foreign `Referer`** (the page therefore sends none —
+   `<meta name="referrer" content="no-referrer">`), and the production API
+   can still refuse a network (`analyze_risk`), in which case the client
+   automatically retries on their staging endpoint (`test-api.vidssave.com`,
+   CORS-open) and remembers the working host for the tab session. The
+   `data` fields are AES-256-CBC encrypted; the page decrypts them with the
+   vendored `aes-js` (`frontend/vendor/aes-js/`).
+2. **Fallback transports** — if vidssave refuses a network on both of its
+   endpoints, resolution falls back to YouTube's innertube `player` API
+   through the companion Chrome extension (user's own IP) or a Cloudflare
+   Worker CORS pipe (`proxy/worker.js` — see `proxy/DEPLOY.md`, set
+   `window.CLIPPER_YT_PROXY` in `frontend/index.html`).
 3. **Fetch + play** — vidssave's CDN sends no CORS headers, so the bytes
    flow through the backend's same-origin relay
    `GET /api/media/proxy?url=<vidssave link>` (Range passthrough,
