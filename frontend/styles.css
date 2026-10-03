@@ -183,6 +183,41 @@ footer {
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
+/* "or upload a file" row under the URL field */
+.upload-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.upload-or {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+.upload-hint { font-size: 0.78rem; }
+.btn.ghost {
+  background: transparent;
+  border: 1px dashed var(--border-2);
+  box-shadow: none;
+  color: var(--text);
+  padding: 9px 18px;
+}
+.btn.ghost:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+.btn.ghost svg { flex: 0 0 auto; }
+#load-card.drag {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: 14px;
+}
+
 .load-status {
   margin-top: 12px;
   font-size: 0.86rem;

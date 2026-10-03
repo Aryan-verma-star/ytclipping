@@ -70,7 +70,7 @@
       You are responsible for having the rights to clip and use this content.</p>
     </details>
 
-    <!-- ============ STEP 1 · paste a URL ============ -->
+    <!-- ============ STEP 1 · paste a URL or upload a file ============ -->
     <section class="card" id="load-card">
       <form id="load-form" class="load-row" autocomplete="off">
         <div class="url-field grow">
@@ -80,6 +80,15 @@
         </div>
         <button id="load-btn" class="btn primary" type="submit">Load video</button>
       </form>
+      <div class="upload-row">
+        <span class="upload-or">or</span>
+        <button id="upload-btn" class="btn ghost" type="button">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 16V5m0 0L7.5 9.5M12 5l4.5 4.5" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.5 15.5v2A2.5 2.5 0 007 20h10a2.5 2.5 0 002.5-2.5v-2" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round"/></svg>
+          Upload a video file
+        </button>
+        <span class="muted upload-hint">mp4 · webm · mov · mkv — up to 400 MB, previews locally</span>
+        <input id="file-input" type="file" accept="video/*,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.3gp" hidden />
+      </div>
       <div id="load-status" class="load-status hidden" role="status"></div>
     </section>
 

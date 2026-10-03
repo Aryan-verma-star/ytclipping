@@ -19,6 +19,7 @@ from app.db.base import Database
 from app.db import repo
 from app.db.models import PREVIEW_ACTIVE_STATUSES, Preview, PreviewStatus
 from app.services.preview import delete_preview_files
+from app.services.uploads import sweep_uploads
 from sqlalchemy import select
 
 log = logging.getLogger("clipper.retention")
@@ -28,6 +29,7 @@ def sweep_once(db: Database, settings: Settings) -> int:
     now = datetime.now(timezone.utc)
     removed = _sweep_clips(db, settings, now)
     removed += _sweep_previews(db, settings, now)
+    removed += sweep_uploads(settings, now=now)
     return removed
 
 
@@ -105,9 +107,10 @@ class RetentionSweeper(threading.Thread):
 
     def run(self) -> None:
         log.info(
-            "retention sweeper started (clips=%sh, previews=%sh, interval=%ss)",
+            "retention sweeper started (clips=%sh, previews=%sh, uploads=%sh, interval=%ss)",
             self.settings.clip_retention_hours,
             self.settings.preview_retention_hours,
+            self.settings.upload_retention_hours,
             self.settings.retention_sweep_interval_seconds,
         )
         while not self.stop_event.is_set():

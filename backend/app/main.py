@@ -29,7 +29,15 @@ from app.core.errors import AppError, PayloadTooLargeError, RateLimitError
 from app.core.ratelimit import RateLimiter, client_ip
 from app.db.base import Database
 from app.downloader.registry import build_provider_chain
-from app.api import routes_ai, routes_jobs, routes_media, routes_meta, routes_previews, routes_styles
+from app.api import (
+    routes_ai,
+    routes_jobs,
+    routes_media,
+    routes_meta,
+    routes_previews,
+    routes_styles,
+    routes_uploads,
+)
 from app.services.preview import PreviewWorker, recover_stale_previews
 from app.services.retention import RetentionSweeper
 from app.services.worker import JobWorker, recover_stale_jobs
@@ -182,9 +190,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def protections(request: Request, call_next):
-        # request-size protection (we only ever submit tiny JSON bodies)
+        # request-size protection (we only ever submit tiny JSON bodies — the
+        # one exception is the multipart upload route, which enforces its own
+        # much larger CLIPPER_MAX_UPLOAD_BYTES cap while streaming to disk)
         method = request.method.upper()
-        if method in ("POST", "PUT", "PATCH"):
+        if method in ("POST", "PUT", "PATCH") and request.url.path != f"{api_prefix}/uploads":
             content_length = request.headers.get("content-length")
             if content_length and content_length.isdigit() and int(content_length) > settings.max_request_bytes:
                 return JSONResponse(
@@ -246,6 +256,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_previews.router, prefix=api_prefix)
     app.include_router(routes_ai.router, prefix=api_prefix)
     app.include_router(routes_media.router, prefix=api_prefix)
+    app.include_router(routes_uploads.router, prefix=api_prefix)
 
     # ---------------- static frontend (mounted last: / → index.html) ----------------
     frontend_dir = settings.resolved_frontend_dir

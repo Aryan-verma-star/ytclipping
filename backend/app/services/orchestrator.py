@@ -130,6 +130,14 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _resolve_uploaded_source(settings, upload_ref: str) -> VideoSource | None:
+    """An upload:// source ref → VideoSource, or None when swept/expired."""
+    from app.services.uploads import upload_as_source
+
+    upload_id = upload_ref[len("upload://") :]
+    return upload_as_source(settings, upload_id)
+
+
 def process_job(
     job_id: str,
     db: Database,
@@ -145,28 +153,47 @@ def process_job(
         if job.status != JobStatus.QUEUED:
             log.info("process_job: job %s is %s, skipping", job_id, job.status.value)
             return
-        job.status = JobStatus.DOWNLOADING
-        job.updated_at = _now()
-        session.commit()
         url = job.source_url
         start = float(job.start_seconds)
         end = float(job.end_seconds)
         style_id = job.style_id
         style_params = dict(job.style_params or {})
         preview_id = job.preview_id
+        is_upload = url.startswith("upload://")
+        # uploaded sources need no download — go straight to clipping
+        job.status = JobStatus.CLIPPING if is_upload else JobStatus.DOWNLOADING
+        job.updated_at = _now()
+        session.commit()
 
     tmp_to_cleanup: list[Path] = []
+    reused = None  # preview file reuse — upload/normal sources may set nothing
     try:
-        reused = None
-        if preview_id:
-            from app.services.preview import resolve_preview_source
+        if is_upload:
+            source = _resolve_uploaded_source(settings, url)
+            if source is None:
+                _fail(
+                    db,
+                    job_id,
+                    "The uploaded source file is no longer available (expired "
+                    "or swept by retention). Upload the file and try again.",
+                )
+                return
+            log.info("job %s source is upload %s", job_id, url)
+        else:
+            reused = None
+            if preview_id:
+                from app.services.preview import resolve_preview_source
 
-            reused = resolve_preview_source(db, preview_id)
-            if reused is not None:
-                log.info("job %s reuses preview %s file", job_id, preview_id)
-        source = reused if reused is not None else _download_with_chain(providers, url, start, end)
-        if reused is None:
-            tmp_to_cleanup.append(source.path)
+                reused = resolve_preview_source(db, preview_id)
+                if reused is not None:
+                    log.info("job %s reuses preview %s file", job_id, preview_id)
+            source = (
+                reused
+                if reused is not None
+                else _download_with_chain(providers, url, start, end)
+            )
+            if reused is None:
+                tmp_to_cleanup.append(source.path)
 
         # --- actual-duration enforcement (spec: "where determinable") ------
         end_effective = end

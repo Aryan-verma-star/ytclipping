@@ -50,6 +50,11 @@ services:
         value: "14400"
       - key: CLIPPER_CLIP_RETENTION_HOURS
         value: "24"
+      # Uploaded source files (POST /api/uploads): cap + retention
+      - key: CLIPPER_MAX_UPLOAD_BYTES
+        value: "400000000"
+      - key: CLIPPER_UPLOAD_RETENTION_HOURS
+        value: "24"
       - key: CLIPPER_RATE_LIMIT_PER_MINUTE
         value: "60"
       - key: CLIPPER_RATE_LIMIT_JOBS_PER_MINUTE

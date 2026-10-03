@@ -1,11 +1,17 @@
 # YouTube Clipper
 
-Paste a YouTube URL, scrub a **scrollable filmstrip timeline** to select the
-portion you want, and get a **9:16 Reels/Shorts clip (1080×1920)** with the
-video centered. A personal-scale tool designed for **free-tier hosting**
-(Render web service + Neon Postgres), with pluggable download providers,
-pluggable clip styles, persistent history, and a documented extension point
-for future AI-assisted clipping.
+Paste a YouTube URL — **or upload a video file from your device** — scrub a
+**scrollable filmstrip timeline** to select the portion you want, and get a
+**9:16 Reels/Shorts clip (1080×1920)** with the video centered. A
+personal-scale tool designed for **free-tier hosting** (Render web service +
+Neon Postgres), with pluggable download providers, pluggable clip styles,
+persistent history, and a documented extension point for future AI-assisted
+clipping.
+
+Uploaded files never need a download at all: the browser engine previews and
+renders them locally (ffmpeg.wasm — the file never leaves your machine), and
+the server engine accepts them through `POST /api/uploads` (multipart,
+streamed to disk, up to `CLIPPER_MAX_UPLOAD_BYTES`).
 
 > **Legal / Terms-of-Service notice.** Downloading YouTube content through
 > third-party services may violate YouTube's Terms of Service and may

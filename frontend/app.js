@@ -292,7 +292,112 @@ function manualHintText() {
   );
 }
 
-/* ------------------------ browser engine: load flow ----------------------- */
+/* --------------------------- file upload (own videos) ---------------------- */
+
+/* A user-uploaded file is the one source that needs NO network at all: the
+ * browser already holds the bytes, so the player, filmstrip and (in the
+ * browser engine) the 9:16 render all run off the local File object. The
+ * server engine only sees the file at submit time (POST /api/uploads). */
+function handleFilePick(file) {
+  if (!file) return;
+  if (!window.ClientEngine) {
+    setLoadStatus("error", "The page did not finish loading — refresh and try again.");
+    return;
+  }
+  if (file.size === 0) {
+    setLoadStatus("error", "That file is empty.");
+    return;
+  }
+  var cap = window.ClientEngine.MAX_SOURCE_BYTES || 400 * 1048576;
+  if (file.size > cap) {
+    setLoadStatus(
+      "error",
+      "That file is " + fmtBytes(file.size) + " — the limit is " + fmtBytes(cap) +
+        ". Try a smaller file."
+    );
+    return;
+  }
+  resetEditor();
+  var token = ++state.previewToken;
+  var fileName = file.name || "uploaded-video";
+  var cleanTitle =
+    fileName.replace(/\.[^.]+$/, "").replace(/[^\w\s.-]/g, "").trim() || "uploaded video";
+  state.client = {
+    info: {
+      kind: "upload",
+      title: cleanTitle,
+      fileName: fileName,
+      duration: null,
+      transport: "upload",
+    },
+    file: file, // a local File — playable + clippable as-is (no OPFS hop)
+    url: "upload://" + fileName,
+  };
+  clientApplyUpload(token);
+}
+
+/* Light the editor from the uploaded file itself: object URL for the
+ * player, timeline from the player's metadata, filmstrip from the local
+ * bytes. Works identically under BOTH engines (the engine only decides
+ * where the final clip renders). */
+function clientApplyUpload(token) {
+  state.preview = null; // server preview path is off for uploads
+  state.urlAtPreviewLoad = "";
+  clearLoadStatus();
+  $("load-btn").disabled = false;
+
+  var info = state.client.info;
+  var file = state.client.file;
+  var editor = $("editor");
+  editor.classList.remove("hidden");
+
+  $("video-title").textContent = info.fileName || info.title;
+  $("video-sub").textContent =
+    fmtBytes(file.size) + " · uploaded file · preview runs locally";
+
+  var saveLink = $("save-original"); // the user already has this file
+  saveLink.classList.add("hidden");
+  saveLink.removeAttribute("href");
+
+  var video = $("player");
+  video.removeAttribute("poster");
+  video.src = URL.createObjectURL(file);
+  state.playerPreviewId = "upload:" + file.name + ":" + file.size;
+  video.classList.remove("dimmed");
+  $("player-preparing").classList.add("hidden");
+
+  var onMeta = function () {
+    video.removeEventListener("loadedmetadata", onMeta);
+    if (token !== state.previewToken || state.timeline) return;
+    var d = video.duration && isFinite(video.duration) ? video.duration : 0;
+    if (!d) return; // undecodable locally — manual times still work
+    buildTimeline({ duration: d, thumbs: [] });
+    onSelectionChange(state.timeline.selStart, state.timeline.selEnd);
+    state.timeline.setProgress(0);
+
+    setCachePill("done", "Uploaded file · " + fmtBytes(file.size));
+    window.ClientEngine.warmUp(); // preload ffmpeg.wasm while picking a range
+    setCachePill("busy", "Generating thumbnails…");
+    window.ClientEngine.generateThumbs(file, d, 60).then(
+      function (thumbs) {
+        if (token !== state.previewToken) return;
+        if (state.timeline && thumbs && thumbs.length) state.timeline.setThumbs(thumbs);
+        setCachePill("done", "Uploaded file · " + fmtBytes(file.size));
+      },
+      function () {
+        if (token !== state.previewToken) return;
+        setCachePill("done", "Uploaded file · " + fmtBytes(file.size)); // cosmetic only
+      }
+    );
+  };
+  video.addEventListener("loadedmetadata", onMeta);
+  if (video.readyState >= 1) onMeta();
+
+  startReelsPreview();
+  updateTransport();
+  updateClientCacheNote();
+  editor.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 
 /* Client-engine variant of loadPreview: resolve the stream in the browser
  * (innertube via the transport), light the editor up immediately with the
@@ -495,7 +600,14 @@ function clientCache(info, token) {
 
 function updateClientCacheNote(pct) {
   var note = $("cache-note");
-  if (state.client && state.client.info && !state.client.file) {
+  if (state.client && state.client.info && state.client.info.kind === "upload") {
+    note.textContent =
+      "Uploaded file — the 9:16 clip renders " +
+      (state.engine === "browser"
+        ? "entirely on your device (ffmpeg.wasm); the file never leaves your machine."
+        : "on the server: the file uploads when you press Create clip (progress shown below), then the server cuts it.");
+    note.classList.remove("hidden");
+  } else if (state.client && state.client.info && !state.client.file) {
     note.textContent =
       "Browser engine: the source is downloading to your device (OPFS) — " +
       "the clip is cut locally with ffmpeg.wasm the moment it finishes" +
@@ -889,6 +1001,11 @@ function submitJob(event) {
     clientSubmitJob();
     return;
   }
+  // server engine + uploaded file: ship the bytes to the backend first
+  if (state.client && state.client.info && state.client.info.kind === "upload") {
+    uploadSubmitJob();
+    return;
+  }
   var btn = $("submit-btn");
   btn.disabled = true;
   btn.textContent = "Creating…";
@@ -1011,6 +1128,90 @@ function clientSubmitJob() {
   );
 }
 
+/* --------------------- server engine: upload + clip ------------------------ */
+
+/* Server-engine variant for uploaded files: multipart POST /api/uploads
+ * (XHR — fetch cannot report upload progress), then a normal job that
+ * references the upload_id. The editor itself was already fully local. */
+function uploadSubmitJob() {
+  var btn = $("submit-btn");
+  btn.disabled = true;
+  btn.textContent = "Uploading…";
+
+  $("status-section").classList.remove("hidden");
+  $("result").classList.add("hidden");
+  $("status-section").scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  var line = $("status-line");
+  function setStatus(pct) {
+    line.innerHTML = "";
+    line.appendChild(el("span", "badge queued", "uploading"));
+    line.appendChild(
+      el(
+        "span",
+        "status-text",
+        pct == null
+          ? " Uploading your video to the server engine…"
+          : " Uploading your video to the server engine… " + pct + "%"
+      )
+    );
+    line.appendChild(
+      el("span", "muted", " " + (state.client.info.fileName || "") + " · " + fmtBytes(state.client.file.size))
+    );
+  }
+  setStatus(null);
+
+  function fail(err) {
+    btn.disabled = false;
+    btn.textContent = "Create clip";
+    showError(err.message);
+  }
+
+  var fd = new FormData();
+  fd.append("file", state.client.file, state.client.info.fileName || "upload.mp4");
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", apiUrl("/api/uploads"));
+  xhr.responseType = "json";
+  xhr.upload.onprogress = function (ev) {
+    if (ev.lengthComputable && ev.total > 0) {
+      setStatus(Math.round((ev.loaded / ev.total) * 100));
+    }
+  };
+  xhr.onerror = function () {
+    fail(new Error("Upload failed — network error (the file may be too large for your connection)."));
+  };
+  xhr.onload = function () {
+    if (xhr.status < 200 || xhr.status >= 300) {
+      var body = xhr.response;
+      var message =
+        body && body.error && body.error.message
+          ? body.error.message
+          : "Upload failed (HTTP " + xhr.status + ").";
+      fail(new Error(message));
+      return;
+    }
+    request("/api/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        upload_id: xhr.response.id,
+        start_time: $("start").value.trim(),
+        end_time: $("end").value.trim(),
+        style_id: $("style").value,
+        style_params: collectStyleParams(),
+      }),
+    }).then(
+      function (job) {
+        btn.disabled = false;
+        btn.textContent = "Create clip";
+        poll(job.id);
+      },
+      fail
+    );
+  };
+  xhr.send(fd);
+}
+
 function poll(jobId) {
   if (state.jobTimer) clearTimeout(state.jobTimer);
   var failures = 0;
@@ -1108,10 +1309,19 @@ function loadHistory() {
         var errorNote = job.error
           ? '<div class="muted" title="' + job.error.replace(/"/g, "&quot;") + '">' + job.error.slice(0, 80) + "</div>"
           : "";
+        // uploaded-file jobs carry a pseudo source_url — only real http(s)
+        // links become anchors
+        var titleText = job.video_title || job.video_id || job.source_url;
+        var safeTitle = String(titleText)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        var srcCell = /^https?:/i.test(job.source_url)
+          ? '<a href="' + job.source_url + '" target="_blank" rel="noreferrer">' + safeTitle + "</a>"
+          : "<span>" + (job.video_title ? safeTitle : "<span class=\"muted\">uploaded file</span>") + "</span>";
         tr.innerHTML =
           "<td>" + fmtDate(job.created_at) + "</td>" +
-          '<td><a href="' + job.source_url + '" target="_blank" rel="noreferrer">' +
-          (job.video_title || job.video_id) + "</a></td>" +
+          "<td>" + srcCell + "</td>" +
           "<td>" + job.start_timecode + " → " + job.end_timecode + "</td>" +
           "<td>" + job.style_id + "</td>" +
           '<td><span class="badge ' + job.status + '">' + job.status + "</span>" + errorNote + "</td>" +
@@ -1194,10 +1404,18 @@ function resetEditor() {
   video.removeAttribute("src");
   video.load();
   video.classList.remove("dimmed");
+  video.removeAttribute("poster");
   $("player-preparing").classList.add("hidden");
   $("cache-pill").classList.add("hidden");
   $("cache-note").classList.add("hidden");
   $("editor").classList.add("hidden");
+  var fileInput = $("file-input");
+  if (fileInput) fileInput.value = ""; // re-picking the same file must fire change
+  var saveLink = $("save-original");
+  if (saveLink) {
+    saveLink.classList.add("hidden");
+    saveLink.removeAttribute("href");
+  }
   updateClientCacheNote();
   $("url").focus();
 }
@@ -1253,9 +1471,47 @@ function bindEvents() {
         /* private mode — fine, next boot defaults again */
       }
       updateEngineChip();
+      // an uploaded file stays loaded across the switch — its editor state
+      // is fully local, only the submit destination changes
+      if (state.client && state.client.info && state.client.info.kind === "upload") {
+        updateClientCacheNote();
+        return;
+      }
       resetEditor();
       var value = $("url").value.trim();
       if (value) loadPreview(value);
+    });
+  }
+
+  // file upload (button + hidden input + drag & drop onto the load card)
+  var uploadBtn = $("upload-btn");
+  var fileInput = $("file-input");
+  if (uploadBtn && fileInput) {
+    uploadBtn.addEventListener("click", function () {
+      fileInput.click();
+    });
+    fileInput.addEventListener("change", function () {
+      var file = fileInput.files && fileInput.files[0];
+      fileInput.value = ""; // allow re-picking the same file later
+      handleFilePick(file);
+    });
+  }
+  var loadCard = $("load-card");
+  if (loadCard) {
+    ["dragenter", "dragover"].forEach(function (evt) {
+      loadCard.addEventListener(evt, function (e) {
+        e.preventDefault();
+        loadCard.classList.add("drag");
+      });
+    });
+    loadCard.addEventListener("dragleave", function (e) {
+      if (e.target === loadCard) loadCard.classList.remove("drag");
+    });
+    loadCard.addEventListener("drop", function (e) {
+      e.preventDefault();
+      loadCard.classList.remove("drag");
+      var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) handleFilePick(file);
     });
   }
 

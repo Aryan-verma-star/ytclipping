@@ -19,6 +19,7 @@ from app.core.validation import (
 )
 from app.db import repo
 from app.db.models import JobStatus, PreviewStatus
+from app.services.uploads import load_upload
 from app.styles.base import get_style, validate_params
 
 router = APIRouter(tags=["jobs"])
@@ -27,7 +28,10 @@ _STATUS_VALUES = [s.value for s in JobStatus]
 
 
 class CreateJobRequest(BaseModel):
-    url: str
+    # Exactly one of url (a YouTube link) or upload_id (a POST /api/uploads
+    # result) must be provided.
+    url: str | None = None
+    upload_id: str | None = None
     start_time: str | float
     end_time: str | float
     style_id: str = "original"
@@ -100,7 +104,6 @@ def _job_out(job) -> JobOut:
 
 def _validate_creation(payload: CreateJobRequest, settings, db):
     """Full request validation; returns every field needed to insert the job."""
-    canonical_url, video_id = extract_youtube_id(payload.url)
     start = parse_time(payload.start_time, field="start_time")
     end = parse_time(payload.end_time, field="end_time")
     validate_time_window(
@@ -117,6 +120,38 @@ def _validate_creation(payload: CreateJobRequest, settings, db):
             field="style_id",
         )
     style_params = validate_params(style, payload.style_params or {})
+
+    # ---- uploaded-file source (no YouTube URL involved) -----------------
+    if payload.upload_id:
+        if payload.url:
+            raise ValidationAppError(
+                "Provide either a YouTube URL or an upload_id, not both.",
+                field="url",
+            )
+        if payload.preview_id:
+            raise ValidationAppError(
+                "preview_id cannot be combined with an uploaded file.",
+                field="preview_id",
+            )
+        meta = load_upload(settings, payload.upload_id)
+        if meta is None:
+            raise ValidationAppError(
+                "upload_id does not refer to a known upload — the file may "
+                "have expired or been swept. Upload the file again.",
+                field="upload_id",
+            )
+        source_url = f"upload://{payload.upload_id}"
+        video_id = payload.upload_id[:16]
+        video_title = meta.get("filename") or "uploaded file"
+        return source_url, video_id, start, end, style_params, False, video_title
+
+    if not payload.url:
+        raise ValidationAppError(
+            "Either a YouTube URL or an upload_id is required.",
+            field="url",
+        )
+
+    canonical_url, video_id = extract_youtube_id(payload.url)
 
     preview_ok = False
     if payload.preview_id:
@@ -149,7 +184,7 @@ def _validate_creation(payload: CreateJobRequest, settings, db):
         # fine: the job queues now and runs the moment the cached file lands.
         preview_ok = True
 
-    return canonical_url, video_id, start, end, style_params, preview_ok
+    return canonical_url, video_id, start, end, style_params, preview_ok, None
 
 
 @router.post("/jobs", response_model=JobOut, status_code=202)
@@ -157,9 +192,15 @@ def create_job(payload: CreateJobRequest, request: Request) -> JobOut:
     settings = request.app.state.settings
     db = request.app.state.db
 
-    canonical_url, video_id, start, end, style_params, preview_ok = _validate_creation(
-        payload, settings, db
-    )
+    (
+        canonical_url,
+        video_id,
+        start,
+        end,
+        style_params,
+        preview_ok,
+        upload_title,
+    ) = _validate_creation(payload, settings, db)
 
     with db.session() as session:
         job = repo.create_job(
@@ -167,6 +208,7 @@ def create_job(payload: CreateJobRequest, request: Request) -> JobOut:
             id=uuid.uuid4().hex,
             source_url=canonical_url,
             video_id=video_id,
+            video_title=upload_title,
             start_seconds=start,
             end_seconds=end,
             style_id=payload.style_id,

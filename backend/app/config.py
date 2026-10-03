@@ -103,6 +103,15 @@ class Settings(BaseSettings):
     max_download_bytes: int = 1_500_000_000  # hard cap on a single source download
     sample_max_seconds: float = 120.0  # dev/test provider: max synthesized duration
 
+    # --- uploads (user's own video files) --------------------------------
+    # POST /api/uploads streams multipart bodies to disk with this hard cap.
+    # Matches the browser engine's 400 MB wasm limit by default; raise it on
+    # roomier instances via CLIPPER_MAX_UPLOAD_BYTES.
+    max_upload_bytes: int = 400_000_000
+    # Uploaded sources are transient (they only feed clip jobs) — swept
+    # after this window together with their sidecar metadata.
+    upload_retention_hours: float = 24.0
+
     # --- retention -------------------------------------------------------
     clip_retention_hours: float = 24.0  # metadata is kept forever, files are not
     retention_sweep_interval_seconds: float = 900.0
@@ -138,6 +147,10 @@ class Settings(BaseSettings):
     @property
     def previews_dir(self) -> Path:
         return self.resolved_data_dir / "previews"
+
+    @property
+    def uploads_dir(self) -> Path:
+        return self.resolved_data_dir / "uploads"
 
     @property
     def tmp_dir(self) -> Path:
@@ -177,6 +190,7 @@ class Settings(BaseSettings):
         self.resolved_data_dir.mkdir(parents=True, exist_ok=True)
         self.clips_dir.mkdir(parents=True, exist_ok=True)
         self.previews_dir.mkdir(parents=True, exist_ok=True)
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
 
 
