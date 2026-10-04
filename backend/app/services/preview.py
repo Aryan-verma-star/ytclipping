@@ -448,6 +448,51 @@ def recover_stale_previews(db: Database) -> int:
     return len(stale_ids)
 
 
+def reconcile_ready_previews_with_disk(db: Database, previews_dir: Path) -> int:
+    """Boot reconciliation for ephemeral filesystems (Render free tier).
+
+    With a durable DATABASE_URL the preview ROWS survive restarts, but the
+    downloaded source FILES live on the instance disk and do not. A READY
+    row whose file is gone would otherwise serve a broken editor (404 media)
+    and fail every clip job that reuses it. Mark such previews failed with a
+    clear message and cascade the failure to queued jobs waiting on them —
+    the user simply loads the video again.
+    """
+    from sqlalchemy import select
+
+    reconciled = 0
+    with db.session() as session:
+        ready = list(
+            session.scalars(select(Preview).where(Preview.status == PreviewStatus.READY))
+        )
+        for preview in ready:
+            work_dir = previews_dir / preview.id
+            has_file = any(work_dir.glob("source.*"))
+            if has_file:
+                continue
+            preview.status = PreviewStatus.FAILED
+            preview.error = (
+                "The cached source file was lost in a service restart "
+                "(free-tier disk is ephemeral). Load the video again."
+            )
+            preview.updated_at = _now()
+            repo.fail_jobs_waiting_on_preview(
+                session,
+                preview.id,
+                "The background source file was lost in a service restart. "
+                "Please load the video and create the clip again.",
+            )
+            reconciled += 1
+        if reconciled:
+            session.commit()
+    if reconciled:
+        log.warning(
+            "reconciled %d ready preview(s) whose files were lost with the disk",
+            reconciled,
+        )
+    return reconciled
+
+
 # --------------- route helpers (shared response shaping) ------------------
 
 

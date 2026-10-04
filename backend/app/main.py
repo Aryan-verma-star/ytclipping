@@ -110,6 +110,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     log.info("database schema is up to date (alembic)")
             recover_stale_jobs(db)
             recover_stale_previews(db)
+            # durable DB + ephemeral disk: READY rows whose files vanished in
+            # a restart are failed cleanly instead of serving a broken editor
+            from app.services.preview import reconcile_ready_previews_with_disk
+
+            reconcile_ready_previews_with_disk(db, settings.previews_dir)
             # Workers are started AND supervised: the watchdog restarts dead
             # threads and replaces ones stuck inside a single item beyond a
             # hard wall (incident 2026-10-03: a hung preview worker blocked

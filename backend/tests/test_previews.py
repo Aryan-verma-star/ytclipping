@@ -353,6 +353,36 @@ def test_stale_preview_recovery_at_startup(client, ready_preview):
     assert "restarted" in body["error"].lower()
 
 
+def test_ready_previews_reconciled_when_files_lost(client, ready_preview, tmp_path):
+    """Durable DB + ephemeral disk: a READY row whose source file vanished
+    (service restart on Render free tier) must fail cleanly — not serve a
+    broken editor and not hang clip jobs that reuse the preview."""
+    from app.services.preview import reconcile_ready_previews_with_disk
+
+    db = client.app.state.db
+    settings = client.app.state.settings
+
+    # the preview is READY with its file on disk → untouched
+    assert reconcile_ready_previews_with_disk(db, settings.previews_dir) == 0
+
+    # simulate the restart wiping the ephemeral disk
+    import shutil as _shutil
+
+    _shutil.rmtree(settings.previews_dir / ready_preview, ignore_errors=True)
+    # and a queued job waiting on the (now lost) preview file
+    job = post_job(client, preview_id=ready_preview)
+    assert job.status_code == 202
+    jid = job.json()["id"]
+
+    assert reconcile_ready_previews_with_disk(db, settings.previews_dir) == 1
+    body = client.get(f"/api/previews/{ready_preview}").json()
+    assert body["status"] == "failed"
+    assert "lost in a service restart" in body["error"].lower()
+    job_body = client.get(f"/api/jobs/{jid}").json()
+    assert job_body["status"] == "failed"
+    assert "restart" in job_body["error"].lower()
+
+
 def test_sweeper_fails_timed_out_previews(tmp_path):
     from app.main import create_app
 
