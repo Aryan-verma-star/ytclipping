@@ -378,9 +378,19 @@ def test_ready_previews_reconciled_when_files_lost(client, ready_preview, tmp_pa
     body = client.get(f"/api/previews/{ready_preview}").json()
     assert body["status"] == "failed"
     assert "lost in a service restart" in body["error"].lower()
+
+    # the waiting job is REQUEUED (not failed): the backend re-downloads the
+    # source itself and still renders the clip — the user resubmits nothing
     job_body = client.get(f"/api/jobs/{jid}").json()
-    assert job_body["status"] == "failed"
-    assert "restart" in job_body["error"].lower()
+    assert job_body["status"] == "queued"
+    assert job_body["preview_id"] is None
+    assert "re-downloading" in (job_body["notes"] or "").lower()
+
+    # …and the requeued job really completes through the provider chain
+    run_job(client, jid)
+    final = client.get(f"/api/jobs/{jid}").json()
+    assert final["status"] == "completed"
+    assert final["clip_url"]
 
 
 def test_sweeper_fails_timed_out_previews(tmp_path):

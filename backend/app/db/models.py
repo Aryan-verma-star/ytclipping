@@ -89,6 +89,9 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(Text)
     provider: Mapped[str | None] = mapped_column(String(32))
     notes: Mapped[str | None] = mapped_column(Text)
+    # automatic restart-recovery attempts (a free-tier restart mid-clip
+    # requeues the job once instead of failing it outright)
+    restart_retries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # result
     output_filename: Mapped[str | None] = mapped_column(String(128))

@@ -442,6 +442,11 @@ def recover_stale_previews(db: Database) -> int:
                 preview_id,
                 "The background source download was interrupted by a service "
                 "restart. Please create the clip again.",
+                allow_requeue=True,
+                requeue_note=(
+                    "The background download was interrupted by a service restart "
+                    "(free tier) — automatically re-downloading and clipping now."
+                ),
             )
     if stale_ids:
         log.warning("recovered %d stale preview(s) as failed", len(stale_ids))
@@ -481,6 +486,11 @@ def reconcile_ready_previews_with_disk(db: Database, previews_dir: Path) -> int:
                 preview.id,
                 "The background source file was lost in a service restart. "
                 "Please load the video and create the clip again.",
+                allow_requeue=True,
+                requeue_note=(
+                    "The cached source file was lost in a service restart (free "
+                    "tier) — automatically re-downloading and clipping now."
+                ),
             )
             reconciled += 1
         if reconciled:

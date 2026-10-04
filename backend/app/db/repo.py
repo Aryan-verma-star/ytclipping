@@ -80,24 +80,84 @@ def oldest_runnable_job_id(session: Session) -> str | None:
     return session.scalar(stmt)
 
 
-def fail_jobs_waiting_on_preview(session: Session, preview_id: str, message: str) -> int:
-    """Fail queued jobs whose preview will never become READY.
+def _requeue_or_fail(job: Job, fail_message: str, requeue_note: str, max_retries: int = 1) -> bool:
+    """Requeue a restart-interrupted job once, else fail it.
+
+    Only jobs whose source the backend can fetch AGAIN (plain http(s) URLs —
+    the provider chain re-resolves them) are requeued; upload:// sources die
+    with their files on the ephemeral disk. Returns True when requeued.
+    """
+    can_refetch = job.source_url.startswith(("http://", "https://"))
+    if can_refetch and (job.restart_retries or 0) < max_retries:
+        job.status = JobStatus.QUEUED
+        job.restart_retries = (job.restart_retries or 0) + 1
+        job.error = None
+        job.notes = requeue_note
+        # the referenced preview can no longer be trusted after a restart
+        # (row failed or file wiped) — the orchestrator re-downloads instead
+        job.preview_id = None
+        return True
+    job.status = JobStatus.FAILED
+    job.error = (fail_message if not can_refetch else fail_message + " (the "
+                 "server already retried this clip automatically once)")[:1000]
+    return False
+
+
+def fail_jobs_waiting_on_preview(
+    session: Session,
+    preview_id: str,
+    message: str,
+    *,
+    allow_requeue: bool = False,
+    requeue_note: str = "Auto-retrying after an interrupted download…",
+) -> int:
+    """Handle queued jobs whose preview will never become READY.
 
     Called whenever a preview fails, expires, or is recovered as stale —
-    otherwise those jobs would wait in the queue forever.
+    otherwise those jobs would wait in the queue forever. With
+    ``allow_requeue`` (startup-recovery paths), refetchable jobs are requeued
+    once so the backend re-downloads the source and still renders the clip.
     """
     stmt = select(Job).where(
         Job.status == JobStatus.QUEUED,
         Job.preview_id == preview_id,
     )
     waiting = list(session.scalars(stmt))
+    requeued = 0
     for job in waiting:
-        job.status = JobStatus.FAILED
-        job.error = message[:1000]
+        if allow_requeue and _requeue_or_fail(job, message, requeue_note):
+            requeued += 1
+        else:
+            job.status = JobStatus.FAILED
+            job.error = message[:1000]
         job.updated_at = datetime.now(timezone.utc)
     if waiting:
         session.commit()
     return len(waiting)
+
+
+def requeue_stale_jobs(session: Session, fail_message: str, requeue_note: str) -> tuple[int, int]:
+    """Startup recovery for jobs interrupted by a service restart.
+
+    Jobs stuck in downloading/clipping (the process died mid-clip) are
+    REQUEUED once when their source is refetchable — the clip then renders
+    on the restarted backend without the user resubmitting. Everything else
+    (uploads, already-retried) fails with the clear resubmit message.
+
+    Returns (requeued, failed).
+    """
+    stmt = select(Job).where(Job.status.in_(ACTIVE_STATUSES))
+    stale = list(session.scalars(stmt))
+    requeued = failed = 0
+    for job in stale:
+        if _requeue_or_fail(job, fail_message, requeue_note):
+            requeued += 1
+        else:
+            failed += 1
+        job.updated_at = datetime.now(timezone.utc)
+    if stale:
+        session.commit()
+    return requeued, failed
 
 
 def fail_stale_jobs(session: Session, message: str) -> int:

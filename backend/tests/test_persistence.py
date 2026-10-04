@@ -74,29 +74,56 @@ def test_retention_sweeper_deletes_files_keeps_metadata(client, settings):
     assert sweep_once(client.app.state.db, settings) == 0
 
 
-def test_startup_recovery_fails_stale_active_jobs(tmp_path):
-    settings = make_settings(tmp_path)
-    db = Database(settings.resolved_database_url)
-    db.create_all()
-
+def _insert_raw_job(db, job_id: str, source_url: str, status: str):
     with db.session() as session:
         session.execute(
             text(
                 "INSERT INTO jobs (id, source_url, video_id, start_seconds, end_seconds,"
                 " style_id, style_params, status) VALUES"
-                " ('stale1', 'https://www.youtube.com/watch?v=jNQXAC9IVRw', 'jNQXAC9IVRw',"
-                " 1.0, 5.0, 'original', '{}', 'clipping')"
+                f" ('{job_id}', '{source_url}', 'jNQXAC9IVRw',"
+                f" 1.0, 5.0, 'original', '{{}}', '{status}')"
             )
         )
         session.commit()
 
+
+def test_startup_recovery_requeues_refetchable_jobs_once(tmp_path):
+    """A restart mid-clip no longer kills the job: refetchable (http) sources
+    are requeued ONCE — the provider chain re-downloads and the clip renders
+    on the restarted backend. The second interruption fails it for real."""
+    settings = make_settings(tmp_path)
+    db = Database(settings.resolved_database_url)
+    db.create_all()
+
+    # three flavors of interrupted work
+    _insert_raw_job(db, "stale1", "https://www.youtube.com/watch?v=jNQXAC9IVRw", "clipping")
+    _insert_raw_job(db, "stale2", "upload://abcdef0123456789", "clipping")  # not refetchable
+    _insert_raw_job(db, "stale3", "https://www.youtube.com/watch?v=jNQXAC9IVRw", "downloading")
+
     recovered = recover_stale_jobs(db)
-    assert recovered == 1
+    assert recovered == 3
 
     with db.session() as session:
-        job = repo.get_job(session, "stale1")
-        assert job.status == JobStatus.FAILED
-        assert "restarted" in job.error.lower()
+        j1 = repo.get_job(session, "stale1")
+        assert j1.status == JobStatus.QUEUED  # requeued…
+        assert j1.restart_retries == 1
+        assert j1.preview_id is None  # dead preview reference dropped
+        assert "retrying" in (j1.notes or "").lower()
+        j2 = repo.get_job(session, "stale2")
+        assert j2.status == JobStatus.FAILED  # upload died with its file
+        assert "restarted" in j2.error.lower()
+        j3 = repo.get_job(session, "stale3")
+        assert j3.status == JobStatus.QUEUED and j3.restart_retries == 1
+
+    # a SECOND restart catches stale1 again — retry budget spent, fail it
+    with db.session() as session:
+        session.execute(text("UPDATE jobs SET status = 'clipping' WHERE id = 'stale1'"))
+        session.commit()
+    recover_stale_jobs(db)
+    with db.session() as session:
+        j1 = repo.get_job(session, "stale1")
+        assert j1.status == JobStatus.FAILED
+        assert "retried this clip automatically once" in j1.error
     db.dispose()
 
 

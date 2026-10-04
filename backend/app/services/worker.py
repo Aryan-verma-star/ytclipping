@@ -70,16 +70,28 @@ class JobWorker(threading.Thread):
 
 
 def recover_stale_jobs(db: Database) -> int:
-    """Startup recovery: jobs interrupted by a restart/redeploy become failed."""
+    """Startup recovery for jobs interrupted by a restart/redeploy.
+
+    Refetchable jobs (plain YouTube/URL sources) are REQUEUED once — the
+    provider chain re-downloads and the clip renders on the restarted
+    backend, so the user does not have to resubmit. Uploads and
+    already-retried jobs fail with a clear message.
+    """
     with db.session() as session:
-        count = repo.fail_stale_jobs(
+        requeued, failed = repo.requeue_stale_jobs(
             session,
-            "Service restarted while this job was being processed (free-tier "
-            "services restart on redeploy or spin-down). Please submit it again.",
+            fail_message=(
+                "Service restarted while this job was being processed (free-tier "
+                "services restart on redeploy or spin-down). Please submit it again."
+            ),
+            requeue_note=(
+                "The server restarted mid-clip (free tier) — automatically retrying "
+                "the download and clip now."
+            ),
         )
-    if count:
-        log.warning("recovered %d stale job(s) as failed", count)
-    return count
+    if requeued or failed:
+        log.warning("restart recovery: %d job(s) requeued, %d failed", requeued, failed)
+    return requeued + failed
 
 
 def fail_stuck_job(db: Database, job_id: str, message: str | None = None) -> None:

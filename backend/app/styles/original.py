@@ -24,13 +24,20 @@ OUTPUT_HEIGHT = 1920
 
 
 def _encode_args() -> list[str]:
+    # Free-tier reality (512 MB / ~0.1 CPU): unbounded x264 threads spawn one
+    # buffer set per reported core (the container reports many more cores than
+    # the quota allows) — that thrashes the scheduler AND can OOM the service
+    # mid-clip (observed: a 60 fps source killed the container 40 s into a
+    # 5 s clip). Two threads encode comfortably within the quota and memory.
     return [
         "-c:v",
         "libx264",
         "-preset",
         "veryfast",
+        "-threads",
+        "2",
         "-crf",
-        "20",
+        "23",
         "-pix_fmt",
         "yuv420p",
         "-c:a",
@@ -82,9 +89,13 @@ class OriginalStyle(ClipStyle):
             f"{duration:.3f}",
         ]
         w, h = OUTPUT_WIDTH, OUTPUT_HEIGHT
+        # 60 fps sources are decimated to 30 fps at the head of the graph:
+        # Reels/Shorts standard, halves filter + encode work and buffer
+        # pressure on the throttled free-tier CPU.
         if background == "black":
             # Scale to fit inside the 9:16 frame, then pad the remainder black.
             vf = (
+                "fps=30,"
                 f"scale={w}:{h}:force_original_aspect_ratio=decrease:"
                 f"force_divisible_by=2,"
                 f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,"
@@ -98,7 +109,7 @@ class OriginalStyle(ClipStyle):
             # blurred background this is visually identical and much cheaper
             # than a full-resolution gblur (free tiers have ~0.1 CPU).
             fc = (
-                "[0:v]split=2[bg][fg];"
+                "[0:v]fps=30,split=2[bg][fg];"
                 f"[bg]scale={w // 5}:{h // 5}:force_original_aspect_ratio=increase,"
                 f"crop={w // 5}:{h // 5},setsar=1,gblur=sigma=5,"
                 f"scale={w}:{h},setsar=1[bgb];"
@@ -111,6 +122,8 @@ class OriginalStyle(ClipStyle):
                     *seek,
                     "-filter_complex",
                     fc,
+                    "-filter_complex_threads",
+                    "2",
                     "-map",
                     "[vout]",
                     "-map",

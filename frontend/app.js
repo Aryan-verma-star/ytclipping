@@ -1440,6 +1440,10 @@ function renderStatus(job) {
   line.innerHTML = "";
   line.appendChild(el("span", "badge " + job.status, job.status));
   line.appendChild(el("span", "status-text", " " + (labels[job.status] || "")));
+  if (job.notes && job.status !== "completed") {
+    // e.g. the server auto-retried the clip after a free-tier restart
+    line.appendChild(el("span", "muted", " " + job.notes));
+  }
   line.appendChild(
     el(
       "span",

@@ -36,6 +36,11 @@ def test_run_ffmpeg_uses_nice_when_available(monkeypatch):
     ffmpeg_mod.run_ffmpeg(["-version"])
     assert seen[0][:3] == ["nice", "-n", "10"]
     assert "ffmpeg" in seen[0][3]
+    # memory guards (512 MB free tier): single decode + filter thread, and
+    # they must sit BEFORE the caller's args (i.e. before the first -i) so
+    # they cap the input decoder
+    i = seen[0].index("ffmpeg")
+    assert seen[0][i + 1 : i + 5] == ["-threads", "1", "-filter_threads", "1"]
 
 
 def test_run_ffmpeg_without_nice_still_works(monkeypatch):

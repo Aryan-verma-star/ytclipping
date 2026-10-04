@@ -222,6 +222,93 @@ def test_original_style_raises_on_missing_source(tmp_path):
     assert not out.exists()
 
 
+# ---------------- free-tier resource discipline ----------------
+
+
+@pytest.fixture(scope="module")
+def hf_source(tmp_path_factory) -> Path:
+    """A 60 fps source — the OOM/multi-minute-encode case seen in production
+    (Big Buck Bunny 60fps killed a 512 MB container 40 s into a 5 s clip)."""
+    path = tmp_path_factory.mktemp("style_hf") / "source60.mp4"
+    run_ffmpeg(
+        [
+            "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=60",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+            "-t", "6",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+            "-c:a", "aac", "-b:a", "64k", "-shortest",
+            str(path),
+        ]
+    )
+    return path
+
+
+def _frame_rate(path: Path) -> float:
+    import json as _json
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate", "-of", "json", str(path),
+        ],
+        capture_output=True,
+        timeout=60,
+    )
+    rate = _json.loads(proc.stdout)["streams"][0]["r_frame_rate"]
+    num, _, den = rate.partition("/")
+    return int(num) / max(1, int(den or 1))
+
+
+def test_60fps_source_is_decimated_to_30fps(hf_source, tmp_path):
+    """Reels/Shorts standard 30 fps output: halves filter + encode work and
+    buffer pressure on the throttled free-tier CPU instead of OOMing it."""
+    style = get_style("original")
+    out = tmp_path / "out_60.mp4"
+    style.apply(
+        hf_source,
+        out,
+        start_in_source=1.0,
+        duration=4.0,
+        params={"background": "blur"},
+    )
+    assert out.exists() and out.stat().st_size > 0
+    assert abs(_frame_rate(out) - 30.0) < 0.1
+    duration, width, height = ffprobe_video_info(out)
+    assert 3.7 <= duration <= 4.3
+    assert (width, height) == (1080, 1920)
+
+
+def test_encode_threads_are_bounded(hf_source, tmp_path, monkeypatch):
+    """The clip command must cap x264/filter threads — unbounded threads on a
+    quota-throttled container thrash the scheduler and balloon memory."""
+    import app.styles.original as original_module
+
+    captured: list[list[str]] = []
+    real_run = original_module.run_ffmpeg
+
+    def spy(cmd, **kwargs):
+        captured.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(original_module, "run_ffmpeg", spy)
+    style = get_style("original")
+    out = tmp_path / "out_threads.mp4"
+    style.apply(
+        hf_source,
+        out,
+        start_in_source=1.0,
+        duration=1.0,
+        params={"background": "blur"},
+    )
+
+    assert out.exists() and out.stat().st_size > 0
+    assert captured, "spy did not capture the ffmpeg call"
+    cmd = captured[0]
+    assert "-threads" in cmd and cmd[cmd.index("-threads") + 1] == "2"
+    assert "-filter_complex_threads" in cmd
+
+
 def test_original_style_params_validation():
     style = get_style("original")
     assert validate_params(style, None) == {"background": "blur"}

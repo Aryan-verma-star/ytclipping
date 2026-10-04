@@ -70,6 +70,17 @@ def run_ffmpeg(args: list[str], *, timeout: float = 3600.0) -> None:
     cmd = [
         *nice_prefix(),
         FFMPEG_BIN,
+        # 512 MB free-tier ceiling: every ffmpeg thread duplicates frame
+        # buffers, and decoding a heavy source with the default thread pool
+        # pushed the container into OOM restarts mid-clip (reproduced twice
+        # in production). One decode thread + one filter thread keeps the
+        # footprint small; on a throttled 0.1-CPU box extra threads buy
+        # nothing anyway. Position matters: before the first -i this caps
+        # the DECODER — the dominant memory consumer.
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
         "-hide_banner",
         "-nostdin",
         "-loglevel",
