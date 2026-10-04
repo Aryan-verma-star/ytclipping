@@ -132,9 +132,9 @@ function updateEngineChip() {
   chip.textContent = "engine: " + (browser ? "browser" : "server");
   chip.classList.toggle("active", browser);
   chip.title = browser
-    ? "Browser engine: uploaded files render locally with ffmpeg.wasm (never uploaded). YouTube links are handled by the server by default — vidssave's download links are network-bound, so a hosted backend cannot relay them; forcing the browser engine for YouTube works on local/same-IP setups or with the companion extension. Click to switch the server engine."
+    ? "Browser engine: uploaded files render locally with ffmpeg.wasm (never uploaded). YouTube links always LOAD and CLIP on the server — vidssave's download links are network-bound, so a hosted backend must fetch them itself. Click to switch the server engine."
     : usable
-      ? "Server engine active. Click to switch to the browser engine (uploads render on your device; YouTube resolves in your browser — needs a local/same-IP backend or the companion extension)."
+      ? "Server engine active. Click to switch to the browser engine (uploads render on your device; YouTube still clips on the server)."
       : "Server engine active. The browser engine needs the companion extension or a configured proxy (see proxy/DEPLOY.md).";
 }
 
@@ -146,6 +146,38 @@ function clientClipName() {
     .replace(/\s+/g, "-")
     .slice(0, 48);
   return (base || "clip") + "-9x16.mp4";
+}
+
+/* POSTs can hit Render's edge 502/503/504 while the free-tier instance is
+ * busy or restarting — usually the request never reached the app. One
+ * automatic retry (3 s later) turns those hiccups into a short pause instead
+ * of a dead submit button. Safe for both endpoints: /previews dedupes by
+ * video_id, and a duplicated /jobs POST at worst leaves an extra history row. */
+function postWithRetry(path, body, attempt) {
+  return request(path, { method: "POST", body: JSON.stringify(body) }).catch(
+    function (err) {
+      var retryable = err && err.status >= 502 && err.status <= 504;
+      if (retryable && (attempt || 0) < 1) {
+        return new Promise(function (resolve) {
+          setTimeout(resolve, 3000);
+        }).then(function () {
+          return postWithRetry(path, body, (attempt || 0) + 1);
+        });
+      }
+      throw err;
+    }
+  );
+}
+
+/* A poll error is TRANSIENT when it comes from infrastructure — rate limit
+ * (429), edge hiccup / busy origin (5xx) or a dropped connection (no status).
+ * The backend keeps working through all of these; only real 4xx replies mean
+ * the request itself is wrong. */
+function isTransientPollError(err) {
+  if (!err) return true;
+  if (err.status === 429) return true;
+  if (err.status >= 500 && err.status < 600) return true;
+  return !err.status; // fetch() network failure — TypeError without a status
 }
 
 /* ----------------------------- preview load ----------------------------- */
@@ -201,7 +233,7 @@ function loadPreview(url) {
   }
   $("load-btn").disabled = true;
 
-  request("/api/previews", { method: "POST", body: JSON.stringify({ url: url }) })
+  postWithRetry("/api/previews", { url: url })
     .then(function (preview) {
       if (token !== state.previewToken) return;
       if (preview.duration) {
@@ -223,7 +255,7 @@ function loadPreview(url) {
 
 function pollPreview(id, token) {
   var failures = 0;
-  var rateLimited = 0; // consecutive 429s — a busy window, not a real failure
+  var rateLimited = 0; // consecutive transient errors (429/5xx/dropped)
   var startedAt = Date.now();
   var tick = function () {
     if (token !== state.previewToken) return;
@@ -293,16 +325,18 @@ function pollPreview(id, token) {
       })
       .catch(function (err) {
         if (token !== state.previewToken) return;
-        if (err && err.status === 429) {
-          // the rate-limit window is full — back off hard and keep waiting;
-          // the preview keeps making progress server-side either way
+        if (isTransientPollError(err)) {
+          // rate-limit window full, edge hiccup (502/503/504) or a dropped
+          // connection — the server keeps preparing the preview either way.
+          // Back off and keep waiting; only a LONG outage is fatal.
           rateLimited += 1;
-          if (rateLimited >= 60) {
+          if (rateLimited >= 90) {
             $("load-btn").disabled = false;
             setLoadStatus(
               "error",
-              "The server is rate-limiting status updates (too many requests). " +
-                "Wait a minute and try again, or upload the video file instead."
+              "Lost contact with the server for several minutes (it may be busy or " +
+                "restarting on the free tier). The video may still finish preparing — " +
+                "reload the page or retry in a minute."
             );
             return;
           }
@@ -1056,6 +1090,30 @@ function submitJob(event) {
   event.preventDefault();
   hideError();
   if (state.engine === "browser" && state.client && state.client.info) {
+    var kind = state.client.info.kind;
+    if (kind === "upload") {
+      // an uploaded file renders locally with ffmpeg.wasm — it never leaves
+      // the device unless the user switched to the server engine
+      if (!state.client.file) {
+        showError(
+          "The source is still downloading to your browser — the local clip starts once the cache finishes."
+        );
+        return;
+      }
+      clientSubmitJob();
+      return;
+    }
+    if (kind === "vidssave" || kind === "youtube") {
+      /* YouTube ALWAYS clips on the Render backend: vidssave CDN links are
+       * signed for the network that created them, so the browser's copy can
+       * neither finish caching through the hosted proxy nor be uploaded
+       * from here — the server re-fetches the source with its own provider
+       * (verified working end-to-end) and cuts the 9:16 clip there. */
+      serverSubmitYouTube();
+      return;
+    }
+    // direct media URL: only the local engine can clip these (the server
+    // accepts YouTube URLs only) — the file must be cached first
     if (!state.client.file) {
       showError(
         "The source is still downloading to your browser — the local clip starts once the cache finishes."
@@ -1070,12 +1128,24 @@ function submitJob(event) {
     uploadSubmitJob();
     return;
   }
+  serverSubmitYouTube();
+}
+
+/* Server-side clip submission — used by every YouTube source (the Render
+ * backend downloads + clips with native ffmpeg). Reuses the server preview
+ * when the URL field still matches the loaded one; otherwise the backend
+ * fetches the source itself. */
+function serverSubmitYouTube() {
   var btn = $("submit-btn");
   btn.disabled = true;
   btn.textContent = "Creating…";
+  hideStatusNote();
+
+  var url = $("url").value.trim();
+  if (state.client && !url) url = state.client.url; // browser-loaded, field cleared
 
   var body = {
-    url: $("url").value.trim(),
+    url: url,
     start_time: $("start").value.trim(),
     end_time: $("end").value.trim(),
     style_id: $("style").value,
@@ -1085,9 +1155,17 @@ function submitJob(event) {
   // since loading — even while it is still caching (the job waits server-side)
   if (state.preview && state.urlAtPreviewLoad === body.url) {
     body.preview_id = state.preview.id;
+  } else if (state.client && state.client.info && state.client.info.kind !== "upload") {
+    // browser-engine load: the server has no preview of this video yet —
+    // tell the user why the submit needs a fresh server-side fetch
+    setCachePill("busy", "Rendering on the server…");
+    showStatusNote(
+      "Clipping happens on the server — it downloads the source itself " +
+        "(the copy cached in your browser cannot be uploaded), which can take a minute."
+    );
   }
 
-  request("/api/jobs", { method: "POST", body: JSON.stringify(body) })
+  postWithRetry("/api/jobs", body)
     .then(function (job) {
       btn.disabled = false;
       btn.textContent = "Create clip";
@@ -1103,6 +1181,18 @@ function submitJob(event) {
       $("result").classList.add("hidden");
       showError(err.message);
     });
+}
+
+function showStatusNote(text) {
+  var note = $("server-note");
+  if (!note) return;
+  note.textContent = text;
+  note.classList.remove("hidden");
+}
+
+function hideStatusNote() {
+  var note = $("server-note");
+  if (note) note.classList.add("hidden");
 }
 
 /* ------------------------- browser engine: clipping ----------------------- */
@@ -1309,13 +1399,21 @@ function poll(jobId) {
         state.jobTimer = setTimeout(render, 2000);
       })
       .catch(function (err) {
-        // transient failures (rate limit, blip) must not orphan a running job
-        if (err && err.status === 429) {
+        // transient failures (rate limit, 502 edge hiccups, dropped
+        // connections) must not orphan a running job — the backend keeps
+        // clipping through all of them
+        if (isTransientPollError(err)) {
           rateLimited += 1;
-          if (rateLimited < 60) {
+          if (rateLimited < 90) {
             state.jobTimer = setTimeout(render, 5000);
             return;
           }
+          showError(
+            "Lost contact with the server for several minutes (free tier — it may " +
+              "be busy or restarting). The clip keeps rendering in the background; " +
+              "check the history table after reloading the page."
+          );
+          return;
         }
         failures += 1;
         if (failures >= 6) {
@@ -1353,6 +1451,7 @@ function renderStatus(job) {
 }
 
 function renderResult(job) {
+  hideStatusNote();
   $("result").classList.remove("hidden");
   var video = $("preview");
   video.src = apiUrl(job.clip_url);

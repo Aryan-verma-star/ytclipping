@@ -15,6 +15,22 @@ FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")
 
 _STDERR_TAIL_CHARS = 2000
 
+# Resolved once: ["nice", "-n", "10"] when coreutils' nice exists, else [].
+# Background transcodes/thumbnail seeks must never starve the web process on
+# tiny CPU quotas: on Render's free tier a foreground ffmpeg saturating the
+# throttled CPU kept uvicorn from answering within the edge's timeout window
+# and the site 502'd for minutes while a clip rendered. Deprioritizing ffmpeg
+# lets status polls stay fast; renders take marginally longer but the UI
+# stays alive. (Applied via an exec wrapper — no preexec_fn fork-side risk.)
+_NICE_PREFIX: list[str] | None = None
+
+
+def nice_prefix() -> list[str]:
+    global _NICE_PREFIX
+    if _NICE_PREFIX is None:
+        _NICE_PREFIX = ["nice", "-n", "10"] if shutil.which("nice") else []
+    return _NICE_PREFIX
+
 
 class FFmpegError(RuntimeError):
     """ffmpeg/ffprobe failed; the message carries the stderr tail."""
@@ -51,7 +67,16 @@ def run_ffmpeg(args: list[str], *, timeout: float = 3600.0) -> None:
     a terminal, some process supervisors) ffmpeg switches to an interactive
     command prompt after the work is done and the call never returns.
     """
-    cmd = [FFMPEG_BIN, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args]
+    cmd = [
+        *nice_prefix(),
+        FFMPEG_BIN,
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        *args,
+    ]
     log.debug("ffmpeg: %s", " ".join(cmd))
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -63,6 +88,7 @@ def run_ffmpeg(args: list[str], *, timeout: float = 3600.0) -> None:
 
 def ffprobe_json(path: os.PathLike | str) -> dict:
     cmd = [
+        *nice_prefix(),
         FFPROBE_BIN,
         "-v",
         "error",
@@ -119,6 +145,7 @@ def ffprobe_remote_info(
     duration once playback starts).
     """
     cmd = [
+        *nice_prefix(),
         FFPROBE_BIN,
         "-v",
         "error",
